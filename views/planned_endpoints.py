@@ -54,8 +54,8 @@ def render(filters: FilterState) -> None:
         if top_ep_df.empty:
             no_data_callout("endpoints")
         else:
-            chart_tile(bar_chart(top_ep_df.head(20), "measure", "trial_count",
-                                 orientation="h", title="Top 20 Planned Endpoints by Frequency"))
+            chart_tile(bar_chart(top_ep_df.head(20), "outcome_category", "trial_count",
+                                 orientation="h", title="Top 20 Planned Endpoint Categories by Frequency"))
             csv_download_button(top_ep_df, "top_endpoints.csv")
 
     with tab3:

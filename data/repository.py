@@ -950,13 +950,12 @@ def get_top_design_endpoints(filters: FilterState, limit: int = 25) -> pd.DataFr
     scope_where = f"AND {scope_clause}" if scope_clause else ""
     sql = f"""
         SELECT
-            do_.measure,
-            do_.outcome_type,
-            COUNT(DISTINCT do_.nct_id) AS trial_count
-        FROM ctgov.design_outcomes do_
-        JOIN ctgov.studies s ON s.nct_id = do_.nct_id
-        WHERE do_.measure IS NOT NULL {scope_where}
-        GROUP BY 1, 2 ORDER BY 3 DESC LIMIT {limit}
+            dc.outcome_category,
+            COUNT(DISTINCT dc.nct_id) AS trial_count
+        FROM public.drug_trial_design_outcome_categories dc
+        JOIN ctgov.studies s ON s.nct_id = dc.nct_id
+        WHERE dc.outcome_category IS NOT NULL {scope_where}
+        GROUP BY 1 ORDER BY 2 DESC LIMIT {limit}
     """
     return query_aact(sql, params)
 

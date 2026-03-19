@@ -4,13 +4,22 @@ Clinical Trials Intelligence Platform — Main Entry Point.
 Run with:
     streamlit run app.py
 """
+import base64
+from pathlib import Path
+from PIL import Image
 import streamlit as st
 from streamlit_option_menu import option_menu
+
+# ── Logo — loaded once at startup ─────────────────────────────────────────────
+_LOGO_PATH  = Path(__file__).parent / "assets" / "logos" / "APP_logo1.png"
+_LOGO_IMAGE = Image.open(_LOGO_PATH)
+_LOGO_B64   = base64.b64encode(_LOGO_PATH.read_bytes()).decode()
+_LOGO_URI   = f"url('data:image/png;base64,{_LOGO_B64}')"
 
 # ── Page config (must be first Streamlit call) ────────────────────────────────
 st.set_page_config(
     page_title="Clinical Trials Intelligence Platform",
-    page_icon="⚗️",
+    page_icon=_LOGO_IMAGE,
     layout="wide",
     initial_sidebar_state="expanded",
     menu_items={
@@ -116,7 +125,45 @@ section[data-testid="stSidebar"] .stSelectbox [data-baseweb="select"] span,
 section[data-testid="stSidebar"] .stMultiSelect [data-baseweb="select"] span { color: #1A1A2E !important; }
 
 section[data-testid="stSidebar"] .stMultiSelect [data-baseweb="tag"] {
-    background-color: #0F4C81 !important; color: white !important; border-radius: 6px !important;
+    background-color: #0F4C81 !important;
+    color: white !important;
+    border-radius: 6px !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 2px !important;
+}
+
+/* Tag label text */
+section[data-testid="stSidebar"] .stMultiSelect [data-baseweb="tag"] span:first-child {
+    color: white !important;
+}
+
+/* Close (×) button — visible white icon on dark navy tag */
+section[data-testid="stSidebar"] .stMultiSelect [data-baseweb="tag"] [role="button"],
+section[data-testid="stSidebar"] .stMultiSelect [data-baseweb="tag"] span[role="button"] {
+    color: rgba(255,255,255,0.85) !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    width: 16px !important;
+    height: 16px !important;
+    border-radius: 50% !important;
+    flex-shrink: 0 !important;
+    background: rgba(255,255,255,0.15) !important;
+    margin-left: 2px !important;
+}
+section[data-testid="stSidebar"] .stMultiSelect [data-baseweb="tag"] [role="button"]:hover,
+section[data-testid="stSidebar"] .stMultiSelect [data-baseweb="tag"] span[role="button"]:hover {
+    background: rgba(255,255,255,0.30) !important;
+    color: white !important;
+}
+
+/* SVG icon inside the close button */
+section[data-testid="stSidebar"] .stMultiSelect [data-baseweb="tag"] [role="button"] svg,
+section[data-testid="stSidebar"] .stMultiSelect [data-baseweb="tag"] span[role="button"] svg {
+    fill: white !important;
+    width: 10px !important;
+    height: 10px !important;
 }
 
 section[data-testid="stSidebar"] .stButton > button {
@@ -230,7 +277,7 @@ _default_idx = _NAV_KEYS.index(_qp_page)
 # NOT a browser page reload.  This is what keeps session_state — and therefore
 # all sidebar filter values — alive across page changes.
 selected = option_menu(
-    menu_title="⚗️ CTIP",
+    menu_title="Apperture Clinical Trials Dashboard",
     options=_NAV_LABELS,
     icons=_NAV_ICONS,
     default_index=_default_idx,
@@ -253,15 +300,19 @@ selected = option_menu(
             "scrollbar-width": "none",
         },
         "menu-title": {
-            "font-size": "0.88rem",
+            "font-size": "1.1rem",
             "font-weight": "700",
             "color": "#0F4C81",
-            "padding": "0 16px 0 4px",
+            "padding": "0 16px 0 40px",
             "border-right": "1px solid #E2E8F0",
             "white-space": "nowrap",
             "letter-spacing": "0.04em",
             "flex-shrink": "0",
             "font-family": "'DM Sans', system-ui, sans-serif",
+            "background-image": _LOGO_URI,
+            "background-repeat": "no-repeat",
+            "background-size": "28px 28px",
+            "background-position": "left center",
         },
         "icon": {
             "font-size": "0.70rem",
