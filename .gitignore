@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+*.so
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Streamlit secrets (contains DB credentials / API keys)
+.streamlit/secrets.toml
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Misnamed pip install artifact
+=*
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Logs
+*.log

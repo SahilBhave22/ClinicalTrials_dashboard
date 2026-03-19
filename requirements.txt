@@ -1,0 +1,29 @@
+# Core framework
+streamlit>=1.35.0
+
+# Database
+sqlalchemy>=2.0.0
+pg8000>=1.31.0
+cloud-sql-python-connector[pg8000]>=1.10.0
+google-auth>=2.29.0
+
+# Data
+pandas>=2.1.0
+numpy>=1.26.0
+
+# Visualisation
+plotly>=5.20.0
+
+# AG Grid (optional but recommended)
+streamlit-aggrid>=0.3.4
+
+# NL Query
+openai>=1.30.0
+langchain>=0.2.0
+langchain-openai>=0.1.0
+
+# Navigation
+streamlit-option-menu>=0.3.6
+
+# Utilities
+python-dateutil>=2.9.0
