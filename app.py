@@ -30,7 +30,6 @@ st.set_page_config(
 # ── Nav items: (label, page_key, group) ───────────────────────────────────────
 NAV_ITEMS = [
     ("Home",         "home",              0),
-    ("Disease",      "landscape",         1),
     ("Pipeline",     "pipeline",          1),
     ("Drug Detail",  "drug_detail",       2),
     ("Sponsors",     "sponsor_benchmark", 2),
@@ -39,7 +38,6 @@ NAV_ITEMS = [
     ("Outcomes",     "reported_outcomes", 4),
     ("Scores",       "outcome_scores",    4),
     ("PRO Overview", "pro_overview",      5),
-    ("PRO Domains",  "pro_domains",       5),
     ("Trial Groups", "trial_groups",      5),
     ("Safety",       "safety_analysis",   6),
     ("Ask the Data", "ask_the_data",      7),
@@ -48,9 +46,9 @@ NAV_ITEMS = [
 _NAV_LABELS = [label for label, _, _ in NAV_ITEMS]
 _NAV_KEYS   = [key   for _, key, _ in NAV_ITEMS]
 _NAV_ICONS  = [
-    "house", "activity", "graph-up", "capsule", "building",
+    "house", "graph-up", "capsule", "building",
     "clipboard-check", "bullseye", "bar-chart-line", "123",
-    "person-check", "grid", "collection", "shield-exclamation", "chat-dots",
+    "person-check", "collection", "shield-exclamation", "chat-dots",
 ]
 _valid_keys = set(_NAV_KEYS)
 
@@ -84,10 +82,7 @@ section[data-testid="stMain"] div.block-container > div:first-child {
     overflow: visible;
 }
 
-/* ── Hide scrollbar on the nav iframe (webkit) ───────────────────────────── */
-section[data-testid="stMain"] div.block-container > div:first-child iframe {
-    overflow-x: auto;
-}
+/* ── Hide scrollbar on the nav (webkit) ─────────────────────────────────── */
 .nav-pills::-webkit-scrollbar { display: none; }
 
 /* ── Main content spacing ────────────────────────────────────────────────── */
@@ -264,6 +259,84 @@ h1, h2, h3 { color: #0F4C81; }
 </style>
 """, unsafe_allow_html=True)
 
+# ── Auth gate ─────────────────────────────────────────────────────────────────
+_USERNAME = "admin"
+_PASSWORD = "password#1234"
+
+if not st.session_state.get("authenticated", False):
+    st.markdown(f"""
+    <style>
+    section[data-testid="stSidebar"] {{ display: none !important; }}
+    .block-container {{ padding-top: 0 !important; }}
+
+    /* Card: style the middle column's vertical block */
+    div[data-testid="stMainBlockContainer"]
+        div[data-testid="stHorizontalBlock"]
+        > div[data-testid="stColumn"]:nth-child(2)
+        > div[data-testid="stVerticalBlock"] {{
+            background: #FFFFFF;
+            border: 1px solid #E5E7EB;
+            border-radius: 16px;
+            box-shadow: 0 4px 32px rgba(15,76,129,0.12);
+            padding: 40px 36px 36px !important;
+            margin-top: 80px;
+    }}
+
+    /* Sign in button */
+    div[data-testid="stMainBlockContainer"] .stButton > button {{
+        background: #0F4C81 !important;
+        color: white !important;
+        border: none !important;
+        border-radius: 8px !important;
+        font-weight: 600 !important;
+        font-size: 15px !important;
+        height: 44px !important;
+        letter-spacing: 0.01em;
+        margin-top: 4px;
+    }}
+    div[data-testid="stMainBlockContainer"] .stButton > button:hover {{
+        background: #0D3F6E !important;
+    }}
+    </style>
+
+    <div style="height:0"></div>
+    """, unsafe_allow_html=True)
+
+    _, col, _ = st.columns([1, 1.4, 1])
+    with col:
+        st.markdown(f"""
+        <div style="text-align:center; margin-bottom:24px;">
+            <img src="data:image/png;base64,{_LOGO_B64}"
+                 style="height:52px; margin-bottom:18px; display:block; margin-left:auto; margin-right:auto;">
+            <div style="font-size:21px; font-weight:700; color:#0F4C81; margin-bottom:5px; letter-spacing:-0.01em;">
+                Clinical Trials Intelligence Platform
+            </div>
+            <div style="font-size:14px; color:#6B7280;">
+                Sign in to continue
+            </div>
+        </div>
+        <hr style="border:none; border-top:1px solid #E5E7EB; margin:0 0 20px 0;">
+        """, unsafe_allow_html=True)
+
+        username = st.text_input("Username", placeholder="Enter your username")
+        password = st.text_input("Password", placeholder="Enter your password", type="password")
+
+        st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+
+        if st.button("Sign in", use_container_width=True):
+            if username == _USERNAME and password == _PASSWORD:
+                st.session_state["authenticated"] = True
+                st.session_state.pop("_login_attempted", None)
+                st.rerun()
+            else:
+                st.session_state["_login_attempted"] = True
+                st.rerun()
+
+        if st.session_state.get("_login_attempted", False):
+            st.error("Incorrect username or password.")
+
+    st.stop()
+
 # ── Resolve initial page from URL (used only when session has no nav state) ───
 # Deep-links like ?nav=landscape will correctly initialize the nav on first load.
 # Once the user navigates within the session, option_menu's own session_state
@@ -277,7 +350,7 @@ _default_idx = _NAV_KEYS.index(_qp_page)
 # NOT a browser page reload.  This is what keeps session_state — and therefore
 # all sidebar filter values — alive across page changes.
 selected = option_menu(
-    menu_title="Apperture Clinical Trials Dashboard",
+    menu_title="",
     options=_NAV_LABELS,
     icons=_NAV_ICONS,
     default_index=_default_idx,
@@ -291,28 +364,13 @@ selected = option_menu(
             "margin": "0",
             "font-family": "'DM Sans', system-ui, sans-serif",
         },
-        # Target Bootstrap's .nav-pills on the <ul> to enforce single-line scroll
         "nav-pills": {
             "flex-wrap": "nowrap",
             "overflow-x": "auto",
             "overflow-y": "hidden",
             "-ms-overflow-style": "none",
             "scrollbar-width": "none",
-        },
-        "menu-title": {
-            "font-size": "1.1rem",
-            "font-weight": "700",
-            "color": "#0F4C81",
-            "padding": "0 16px 0 40px",
-            "border-right": "1px solid #E2E8F0",
-            "white-space": "nowrap",
-            "letter-spacing": "0.04em",
-            "flex-shrink": "0",
-            "font-family": "'DM Sans', system-ui, sans-serif",
-            "background-image": _LOGO_URI,
-            "background-repeat": "no-repeat",
-            "background-size": "28px 28px",
-            "background-position": "left center",
+            "gap": "4px",
         },
         "icon": {
             "font-size": "0.70rem",
@@ -327,7 +385,9 @@ selected = option_menu(
             "border-bottom": "2px solid transparent",
             "white-space": "nowrap",
             "letter-spacing": "0.01em",
-            "flex-shrink": "0",
+            "flex": "0 0 auto",
+            "text-align": "center",
+            "justify-content": "center",
             "--hover-color": "#F8FAFC",
             "font-family": "'DM Sans', system-ui, sans-serif",
         },
@@ -353,10 +413,6 @@ filters = render_sidebar()
 # ── Route to pages ────────────────────────────────────────────────────────────
 if current_page == "home":
     from views.home import render
-    render(filters)
-
-elif current_page == "landscape":
-    from views.landscape import render
     render(filters)
 
 elif current_page == "pipeline":
@@ -389,10 +445,6 @@ elif current_page == "outcome_scores":
 
 elif current_page == "pro_overview":
     from views.pro_overview import render
-    render(filters)
-
-elif current_page == "pro_domains":
-    from views.pro_domains import render
     render(filters)
 
 elif current_page == "trial_groups":

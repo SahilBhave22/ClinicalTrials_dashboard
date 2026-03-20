@@ -87,7 +87,6 @@ CATEGORICAL_PALETTE = COLORS["chart_sequence"]
 # ── Page nav ─────────────────────────────────────────────────────────────────
 PAGES = [
     {"label": "Home / Overview",        "icon": "🏠", "key": "home"},
-    {"label": "Disease Landscape",      "icon": "🗺️", "key": "landscape"},
     {"label": "Pipeline Landscape",     "icon": "🔬", "key": "pipeline"},
     {"label": "Drug Detail",            "icon": "💊", "key": "drug_detail"},
     {"label": "Sponsor Benchmark",      "icon": "🏢", "key": "sponsor_benchmark"},
@@ -96,7 +95,6 @@ PAGES = [
     {"label": "Reported Outcomes",      "icon": "📊", "key": "reported_outcomes"},
     {"label": "Outcome Scores",         "icon": "📈", "key": "outcome_scores"},
     {"label": "PRO Overview",           "icon": "👤", "key": "pro_overview"},
-    {"label": "PRO Domains",            "icon": "🧩", "key": "pro_domains"},
     {"label": "Trial Groups",           "icon": "👥", "key": "trial_groups"},
     {"label": "Safety Analysis",        "icon": "🛡️", "key": "safety_analysis"},
     {"label": "Ask the Data",           "icon": "💬", "key": "ask_the_data"},
