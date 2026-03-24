@@ -722,6 +722,128 @@ def get_drug_phase_mix(filters: FilterState) -> pd.DataFrame:
     return query_aact(sql, params)
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def get_drug_brand_names(filters: FilterState, limit: int = 30) -> pd.DataFrame:
+    """Return brand names and their trial counts, restricted to in-scope brands only."""
+    from data.query_builder import _list_clause, resolve_brand_names_from_drug_indication
+
+    qb = QueryBuilder(filters)
+    scope_clause, params = qb.study_scope_clause("s")
+    params["lim"] = limit
+
+    # Build brand restriction so the JOIN with drug_trials only surfaces brands
+    # that are actually in scope. Without this, every brand co-enrolled in a
+    # scoped trial would appear even if it belongs to a different drug class.
+    # Restriction applies when ATC class, explicit brand selection, or drug
+    # indication is active. When only indication_name is set the brand list is
+    # intentionally unrestricted (indication is condition-level, not drug-level).
+    restricted_brands: list[str] = []
+    if qb.brand_names:
+        restricted_brands.extend(qb.brand_names)
+    if filters.brand_name:
+        restricted_brands.extend(filters.brand_name)
+    if filters.drug_indication:
+        di_brands = resolve_brand_names_from_drug_indication(filters.drug_indication)
+        restricted_brands.extend(di_brands)
+    restricted_brands = list(dict.fromkeys(restricted_brands))  # deduplicate, preserve order
+
+    brand_filter = ""
+    if restricted_brands:
+        bn_p: dict = {}
+        bn_frag = _list_clause("dt.brand_name", restricted_brands, bn_p, "dbf")
+        params.update(bn_p)
+        brand_filter = f"AND {bn_frag}"
+
+    sql = f"""
+        SELECT
+            dt.brand_name,
+            COUNT(DISTINCT s.nct_id) AS trial_count
+        FROM ctgov.studies s
+        JOIN public.drug_trials dt ON dt.nct_id = s.nct_id
+        WHERE {scope_clause}
+          AND dt.brand_name IS NOT NULL
+          {brand_filter}
+        GROUP BY 1 ORDER BY 2 DESC
+        LIMIT :lim
+    """
+    return query_aact(sql, params)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_drug_phase_brand_heatmap(filters: FilterState, limit: int = 20) -> pd.DataFrame:
+    """
+    Return a pivoted DataFrame (phase × brand_name) with trial counts.
+    Brands are limited to the top `limit` by trial count to keep the chart readable.
+    """
+    from data.query_builder import _list_clause, resolve_brand_names_from_drug_indication
+
+    qb = QueryBuilder(filters)
+    scope_clause, params = qb.study_scope_clause("s")
+    params["lim"] = limit
+
+    # Same brand restriction logic as get_drug_brand_names — only surface brands
+    # that are actually in scope, not every brand co-enrolled in scoped trials.
+    restricted_brands: list[str] = []
+    if qb.brand_names:
+        restricted_brands.extend(qb.brand_names)
+    if filters.brand_name:
+        restricted_brands.extend(filters.brand_name)
+    if filters.drug_indication:
+        di_brands = resolve_brand_names_from_drug_indication(filters.drug_indication)
+        restricted_brands.extend(di_brands)
+    restricted_brands = list(dict.fromkeys(restricted_brands))
+
+    brand_filter = ""
+    if restricted_brands:
+        bn_p: dict = {}
+        bn_frag = _list_clause("dt.brand_name", restricted_brands, bn_p, "hbf")
+        params.update(bn_p)
+        brand_filter = f"AND {bn_frag}"
+
+    # First fetch the top brands by trial count so we can restrict the heatmap
+    top_brands_sql = f"""
+        SELECT dt.brand_name
+        FROM ctgov.studies s
+        JOIN public.drug_trials dt ON dt.nct_id = s.nct_id
+        WHERE {scope_clause}
+          AND dt.brand_name IS NOT NULL
+          {brand_filter}
+        GROUP BY 1 ORDER BY COUNT(DISTINCT s.nct_id) DESC
+        LIMIT :lim
+    """
+    top_brands_df = query_aact(top_brands_sql, params)
+    if top_brands_df.empty:
+        return pd.DataFrame()
+
+    top_brands = top_brands_df["brand_name"].tolist()
+
+    params2: dict = dict(params)
+    bn_frag = _list_clause("dt.brand_name", top_brands, params2, "hbm")
+
+    detail_sql = f"""
+        SELECT
+            COALESCE(s.phase, 'N/A') AS phase,
+            dt.brand_name,
+            COUNT(DISTINCT s.nct_id) AS trial_count
+        FROM ctgov.studies s
+        JOIN public.drug_trials dt ON dt.nct_id = s.nct_id
+        WHERE {scope_clause}
+          AND {bn_frag}
+        GROUP BY 1, 2
+    """
+    long_df = query_aact(detail_sql, params2)
+    if long_df.empty:
+        return pd.DataFrame()
+
+    pivot = long_df.pivot_table(
+        index="phase", columns="brand_name", values="trial_count", fill_value=0
+    )
+    # Order columns by total trials descending (matches top_brands order)
+    col_order = [b for b in top_brands if b in pivot.columns]
+    pivot = pivot[col_order]
+    return pivot
+
+
 # ════════════════════════════════════════════════════════════════════════════
 #  SPONSOR BENCHMARK
 # ════════════════════════════════════════════════════════════════════════════

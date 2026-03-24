@@ -24,11 +24,13 @@ EXAMPLE_QUESTIONS = [
 
 # Chip colours per dimension
 _CHIP_COLORS = {
-    "Condition": "#0F4C81",
-    "Sponsor":   "#2E86AB",
-    "Phase":     "#2A9D8F",
-    "Status":    "#F18F01",
-    "Country":   "#E76F51",
+    "Condition":   "#0F4C81",
+    "Drug Class":  "#1D3557",
+    "Sponsor":     "#2E86AB",
+    "Phase":       "#2A9D8F",
+    "Status":      "#F18F01",
+    "Country":     "#E76F51",
+    "Agency Class": "#457B9D",
     "Has Results": "#6B7280",
 }
 
@@ -181,21 +183,34 @@ def _apply_filters(extracted: dict) -> None:
         st.session_state.pop(key, None)
 
     # 3. Reset FilterState downstream fields
-    fs.sponsor        = []
-    fs.phase          = []
-    fs.overall_status = []
-    fs.country        = []
-    fs.has_results    = None
+    fs.sponsor              = []
+    fs.phase                = []
+    fs.overall_status       = []
+    fs.country              = []
+    fs.sponsor_agency_class = []
+    fs.has_results          = None
 
-    # 4. Apply extracted values
+    # 4. Load valid values from static catalog for validation
+    static         = _load_static_catalog()
+    valid_phases   = set(static.get("phases", []))
+    valid_statuses = set(static.get("overall_statuses", []))
+    valid_countries = set(static.get("countries", []))
+    valid_agency   = set(static.get("agency_classes", []))
+    valid_atc      = set(_load_catalog().get("drug_classes", []))
+
+    # 5. Apply extracted values
     if extracted.get("sponsors"):
         fs.sponsor = extracted["sponsors"]
     if extracted.get("phases"):
-        fs.phase = [p for p in extracted["phases"] if p in PHASE_DB_VALUES]
+        fs.phase = [p for p in extracted["phases"] if p in valid_phases]
     if extracted.get("statuses"):
-        fs.overall_status = [s for s in extracted["statuses"] if s in STATUS_DB_VALUES]
+        fs.overall_status = [s for s in extracted["statuses"] if s in valid_statuses]
     if extracted.get("countries"):
-        fs.country = extracted["countries"]
+        fs.country = [c for c in extracted["countries"] if c in valid_countries]
+    if extracted.get("agency_class"):
+        fs.sponsor_agency_class = [a for a in extracted["agency_class"] if a in valid_agency]
+    if extracted.get("atc_class") and extracted["atc_class"] in valid_atc:
+        fs.atc_class_name = extracted["atc_class"]
     if extracted.get("has_results") is not None:
         fs.has_results = extracted["has_results"]
         st.session_state.pop("sel_results", None)  # let sidebar re-read from FilterState
@@ -294,6 +309,8 @@ def render(filters: FilterState) -> None:
         chip_items: list[tuple[str, str]] = []
         if extracted.get("indication"):
             chip_items.append(("Condition", extracted["indication"]))
+        if extracted.get("atc_class"):
+            chip_items.append(("Drug Class", extracted["atc_class"]))
         for sp in extracted.get("sponsors", []):
             chip_items.append(("Sponsor", sp))
         for ph in extracted.get("phases", []):
@@ -302,6 +319,8 @@ def render(filters: FilterState) -> None:
             chip_items.append(("Status", st_))
         for co in extracted.get("countries", []):
             chip_items.append(("Country", co))
+        for ag in extracted.get("agency_class", []):
+            chip_items.append(("Agency Class", ag))
         if extracted.get("has_results") is not None:
             chip_items.append(("Has Results", "Yes" if extracted["has_results"] else "No"))
 

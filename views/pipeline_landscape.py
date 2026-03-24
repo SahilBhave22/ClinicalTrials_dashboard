@@ -16,6 +16,7 @@ from components.alerts import no_data_callout, pipeline_data_note
 from components.tables import ag_table, csv_download_button
 from utils.filters import FilterState
 from services.pipeline_analysis import sponsor_indication_pivot
+from services.ai_summary import build_pipeline_context, generate_summary, filter_hash
 from data.repository import (
     get_pipeline_kpis,
     get_pipeline_by_sponsor,
@@ -41,7 +42,11 @@ def render(filters: FilterState) -> None:
     sponsors = tuple(filters.sponsor)
 
     with st.spinner("Loading pipeline data…"):
-        kpis = get_pipeline_kpis(ind, sponsors)
+        kpis    = get_pipeline_kpis(ind, sponsors)
+        sp_df   = get_pipeline_by_sponsor(ind, sponsors, limit=20)
+        ind_df  = get_pipeline_by_indication(ind, sponsors, limit=25)
+        intv_df = get_pipeline_top_interventions(ind, sponsors, limit=25)
+        pro_df  = get_pipeline_pro_usage(ind, sponsors, limit=20)
 
     # ── KPIs ──────────────────────────────────────────────────────────────────
     kpi_row([
@@ -60,7 +65,6 @@ def render(filters: FilterState) -> None:
     ])
 
     with tab1:
-        sp_df = get_pipeline_by_sponsor(ind, sponsors, limit=20)
         if sp_df.empty:
             no_data_callout("pipeline sponsors")
         else:
@@ -74,7 +78,6 @@ def render(filters: FilterState) -> None:
             csv_download_button(sp_df, "pipeline_sponsors.csv")
 
     with tab2:
-        ind_df = get_pipeline_by_indication(ind, sponsors, limit=25)
         if ind_df.empty:
             no_data_callout("indications")
         else:
@@ -87,7 +90,6 @@ def render(filters: FilterState) -> None:
                                          values="trial_count", title="Indication Treemap"))
 
     with tab3:
-        intv_df = get_pipeline_top_interventions(ind, sponsors, limit=25)
         if intv_df.empty:
             no_data_callout("pipeline interventions")
         else:
@@ -106,7 +108,6 @@ def render(filters: FilterState) -> None:
             no_data_callout("heatmap")
 
     with tab5:
-        pro_df = get_pipeline_pro_usage(ind, sponsors, limit=20)
         if pro_df.empty:
             no_data_callout("pipeline PROs")
         else:
@@ -122,3 +123,75 @@ def render(filters: FilterState) -> None:
     if not trials_df.empty:
         ag_table(trials_df, height=420, key="pipeline_table")
         csv_download_button(trials_df, "pipeline_trials.csv")
+
+    # ── AI Summary button ──────────────────────────────────────────────────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    _render_ai_summary(filters, kpis, sp_df, ind_df, intv_df, pro_df, trials_df)
+
+
+# ── AI Summary helpers ─────────────────────────────────────────────────────────
+
+def _render_ai_summary(filters, kpis, sp_df, ind_df, intv_df, pro_df, trials_df):
+    """Render the AI Summary button and result card for the Pipeline Landscape page."""
+    _, btn_col = st.columns([4, 1])
+
+    with btn_col:
+        if filters.has_any_filter():
+            clicked = st.button(
+                "🤖 AI Summary",
+                use_container_width=True,
+                key="pipeline_ai_btn",
+                help="Generate an AI-powered analyst summary of the current pipeline data.",
+            )
+        else:
+            st.caption("Apply a filter to enable AI Summary.")
+            clicked = False
+
+    if clicked:
+        current_hash = filter_hash(filters)
+        if st.session_state.get("pipeline_summary_hash") != current_hash:
+            with st.spinner("Generating AI summary…"):
+                context = build_pipeline_context(
+                    kpis, sp_df, ind_df, intv_df, pro_df, trials_df, filters
+                )
+                summary = generate_summary(context, page_name="Pipeline Landscape")
+            if summary:
+                st.session_state["pipeline_ai_summary"] = summary
+                st.session_state["pipeline_summary_hash"] = current_hash
+
+    # Clear cached summary if filters have changed
+    current_hash = filter_hash(filters)
+    if (
+        "pipeline_summary_hash" in st.session_state
+        and st.session_state["pipeline_summary_hash"] != current_hash
+    ):
+        st.session_state.pop("pipeline_ai_summary", None)
+        st.session_state.pop("pipeline_summary_hash", None)
+
+    if st.session_state.get("pipeline_ai_summary"):
+        st.markdown(
+            """
+            <div style="
+                background: white;
+                border: 1px solid #E5E7EB;
+                border-left: 4px solid #0F4C81;
+                border-radius: 12px;
+                padding: 24px 28px;
+                margin: 8px 0 24px 0;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+            ">
+            <div style="
+                font-size: 11px;
+                color: #6B7280;
+                font-weight: 600;
+                letter-spacing: 0.05em;
+                text-transform: uppercase;
+                margin-bottom: 16px;
+            ">
+                🤖 AI Generated &nbsp;·&nbsp; GPT-4o &nbsp;·&nbsp; Based on current filters
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.markdown(st.session_state["pipeline_ai_summary"])
+        st.markdown("</div>", unsafe_allow_html=True)

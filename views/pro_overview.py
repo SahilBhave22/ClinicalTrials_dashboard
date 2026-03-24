@@ -18,6 +18,7 @@ from services.pro_analysis import (
     top_instruments,
     planned_vs_reported_pivot,
 )
+from services.ai_summary import build_pro_overview_context, generate_summary, filter_hash
 from data.repository import (
     get_pro_usage,
     get_pro_by_sponsor,
@@ -127,3 +128,80 @@ def render(filters: FilterState) -> None:
         st.markdown("#### PRO Instrument Details")
         ag_table(agg_df, height=350, key="pro_overview_table")
         csv_download_button(agg_df, "pro_overview.csv")
+
+    # ── AI Summary button ──────────────────────────────────────────────────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    kpis_dict = {
+        "unique_instruments":   unique_instr,
+        "planned_pro_trials":   planned_n,
+        "reported_pro_trials":  reported_n,
+    }
+    _render_ai_summary(filters, kpis_dict, top_df, sp_df, phase_df, funnel_df, pivot_df)
+
+
+# ── AI Summary helpers ─────────────────────────────────────────────────────────
+
+def _render_ai_summary(filters, kpis_dict, top_df, sp_df, phase_df, funnel_df, pivot_df):
+    """Render the AI Summary button and result card for the PRO Overview page."""
+    _, btn_col = st.columns([4, 1])
+
+    with btn_col:
+        if filters.has_any_filter():
+            clicked = st.button(
+                "🤖 AI Summary",
+                use_container_width=True,
+                key="pro_ai_btn",
+                help="Generate an AI-powered analyst summary of the current PRO data.",
+            )
+        else:
+            st.caption("Apply a filter to enable AI Summary.")
+            clicked = False
+
+    if clicked:
+        current_hash = filter_hash(filters)
+        if st.session_state.get("pro_summary_hash") != current_hash:
+            with st.spinner("Generating AI summary…"):
+                context = build_pro_overview_context(
+                    kpis_dict, top_df, sp_df, phase_df, funnel_df, pivot_df, filters
+                )
+                summary = generate_summary(context, page_name="PRO Overview")
+            if summary:
+                st.session_state["pro_ai_summary"] = summary
+                st.session_state["pro_summary_hash"] = current_hash
+
+    # Clear cached summary if filters have changed
+    current_hash = filter_hash(filters)
+    if (
+        "pro_summary_hash" in st.session_state
+        and st.session_state["pro_summary_hash"] != current_hash
+    ):
+        st.session_state.pop("pro_ai_summary", None)
+        st.session_state.pop("pro_summary_hash", None)
+
+    if st.session_state.get("pro_ai_summary"):
+        st.markdown(
+            """
+            <div style="
+                background: white;
+                border: 1px solid #E5E7EB;
+                border-left: 4px solid #0F4C81;
+                border-radius: 12px;
+                padding: 24px 28px;
+                margin: 8px 0 24px 0;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+            ">
+            <div style="
+                font-size: 11px;
+                color: #6B7280;
+                font-weight: 600;
+                letter-spacing: 0.05em;
+                text-transform: uppercase;
+                margin-bottom: 16px;
+            ">
+                🤖 AI Generated &nbsp;·&nbsp; GPT-4o &nbsp;·&nbsp; Based on current filters
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.markdown(st.session_state["pro_ai_summary"])
+        st.markdown("</div>", unsafe_allow_html=True)
