@@ -9,7 +9,7 @@ from components.page_header import page_header
 from components.metric_cards import kpi_row
 from components.filter_summary import filter_summary_bar
 from components.charts import (
-    phase_bar, bar_chart, donut_chart,
+    phase_bar, bar_chart,
 )
 from components.chart_tile import chart_tile
 from components.alerts import no_data_callout
@@ -60,15 +60,9 @@ def render(filters: FilterState) -> None:
     )
 
     with tab1:
-        c1, c2 = st.columns(2)
-        with c1:
-            if not phase_df.empty:
-                chart_tile(phase_bar(phase_df, "phase", "trial_count",
-                                     title="Phase Mix"))
-        with c2:
-            if not phase_df.empty:
-                chart_tile(donut_chart(phase_df, "phase", "trial_count",
-                                       title="Phase Distribution"))
+        if not phase_df.empty:
+            chart_tile(phase_bar(phase_df, "phase", "trial_count",
+                                 title="Phase Mix"))
 
     with tab2:
         if cond_df.empty:

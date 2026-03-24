@@ -26,7 +26,7 @@ DRUGS_GENERIC_COL    = "generic_name"
 # The global "Indication" filter uses ctgov.browse_conditions mesh-list terms,
 # NOT drug_indications. drug_indications is used only as a downstream filter.
 BROWSE_CONDITIONS_TABLE     = "ctgov.browse_conditions"
-BROWSE_CONDITIONS_MESH_TERM = "mesh_term"
+BROWSE_CONDITIONS_MESH_TERM = "downcase_mesh_term"
 BROWSE_CONDITIONS_MESH_TYPE = "mesh_type"
 BROWSE_CONDITIONS_MESH_LIST = "mesh-list"
 

@@ -38,9 +38,10 @@ def render(filters: FilterState) -> None:
     pipeline_data_note()
 
     ind = filters.indication_name
+    sponsors = tuple(filters.sponsor)
 
     with st.spinner("Loading pipeline data…"):
-        kpis = get_pipeline_kpis(ind)
+        kpis = get_pipeline_kpis(ind, sponsors)
 
     # ── KPIs ──────────────────────────────────────────────────────────────────
     kpi_row([
@@ -59,7 +60,7 @@ def render(filters: FilterState) -> None:
     ])
 
     with tab1:
-        sp_df = get_pipeline_by_sponsor(ind, limit=20)
+        sp_df = get_pipeline_by_sponsor(ind, sponsors, limit=20)
         if sp_df.empty:
             no_data_callout("pipeline sponsors")
         else:
@@ -73,7 +74,7 @@ def render(filters: FilterState) -> None:
             csv_download_button(sp_df, "pipeline_sponsors.csv")
 
     with tab2:
-        ind_df = get_pipeline_by_indication(ind, limit=25)
+        ind_df = get_pipeline_by_indication(ind, sponsors, limit=25)
         if ind_df.empty:
             no_data_callout("indications")
         else:
@@ -86,7 +87,7 @@ def render(filters: FilterState) -> None:
                                          values="trial_count", title="Indication Treemap"))
 
     with tab3:
-        intv_df = get_pipeline_top_interventions(ind, limit=25)
+        intv_df = get_pipeline_top_interventions(ind, sponsors, limit=25)
         if intv_df.empty:
             no_data_callout("pipeline interventions")
         else:
@@ -95,7 +96,7 @@ def render(filters: FilterState) -> None:
             csv_download_button(intv_df, "pipeline_interventions.csv")
 
     with tab4:
-        heat_df = get_pipeline_sponsor_indication_heatmap(ind)
+        heat_df = get_pipeline_sponsor_indication_heatmap(ind, sponsors)
         if not heat_df.empty:
             pivot = sponsor_indication_pivot(heat_df)
             if not pivot.empty:
@@ -105,7 +106,7 @@ def render(filters: FilterState) -> None:
             no_data_callout("heatmap")
 
     with tab5:
-        pro_df = get_pipeline_pro_usage(ind, limit=20)
+        pro_df = get_pipeline_pro_usage(ind, sponsors, limit=20)
         if pro_df.empty:
             no_data_callout("pipeline PROs")
         else:
@@ -116,6 +117,8 @@ def render(filters: FilterState) -> None:
     st.markdown("---")
     st.markdown("#### Pipeline Trial Details")
     trials_df = get_pipeline_trials_table(ind)
+    if filters.sponsor:
+        trials_df = trials_df[trials_df["sponsor_name"].isin(filters.sponsor)]
     if not trials_df.empty:
         ag_table(trials_df, height=420, key="pipeline_table")
         csv_download_button(trials_df, "pipeline_trials.csv")

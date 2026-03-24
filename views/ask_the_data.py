@@ -1,6 +1,6 @@
 """
-ASK THE DATA page.
-Natural language → SQL query interface using OpenAI.
+ASK THE DATA page — AI-powered filter extraction.
+User asks a natural language question → AI extracts filter values → all tabs filtered.
 """
 from __future__ import annotations
 import json
@@ -9,92 +9,118 @@ import streamlit as st
 
 from components.page_header import page_header
 from components.filter_summary import filter_summary_bar
-from components.alerts import warning_callout, danger_callout
-from components.tables import ag_table, csv_download_button
-from utils.filters import FilterState
-from data.repository import run_nl_query
+from utils.filters import FilterState, get_filters, set_filters
+
+EXAMPLE_QUESTIONS = [
+    "Phase 2 trials for NSCLC by AstraZeneca",
+    "Completed breast cancer trials with posted results",
+    "Recruiting AML trials from major pharma",
+    "Merck's Phase 3 oncology pipeline",
+    "DLBCL trials by BMS or Roche-Genentech",
+    "Phase 1/2 TNBC immunotherapy trials",
+    "Multiple myeloma trials with results posted",
+    "Pfizer Phase 3 prostate cancer trials",
+]
+
+# Chip colours per dimension
+_CHIP_COLORS = {
+    "Condition": "#0F4C81",
+    "Sponsor":   "#2E86AB",
+    "Phase":     "#2A9D8F",
+    "Status":    "#F18F01",
+    "Country":   "#E76F51",
+    "Has Results": "#6B7280",
+}
 
 
-# ── Schema context loader ─────────────────────────────────────────────────────
+# ── Catalog loaders ────────────────────────────────────────────────────────────
 
-@st.cache_data(ttl=3600)
-def _load_schema_context() -> str:
-    ct_path = Path("catalogs/clinicaltrials_schema_catalog.json")
-    dr_path = Path("catalogs/drugs_schema_catalog.json")
-    parts: list[str] = []
-    try:
-        ct = json.loads(ct_path.read_text("utf-8"))
-        tables_desc = []
-        for t in ct.get("tables", []):
-            cols = ", ".join(
-                f"{c['name']} ({c['type']})"
-                for c in t.get("columns", [])
-            )
-            tables_desc.append(f"  TABLE {t['name']}: {cols}")
-        parts.append("=== CLINICAL TRIALS SCHEMA (AACT DB) ===\n" + "\n".join(tables_desc))
-    except Exception:
-        pass
-    try:
-        dr = json.loads(dr_path.read_text("utf-8"))
-        parts.append(
-            "\n=== DRUGS DB VALUES ===\n"
-            f"drug_class_values (atc_class_name): {dr.get('drug_class_values','')[:500]}\n"
-            f"drug_indication_values (indication_name): {dr.get('drug_indication_values','')[:500]}"
-        )
-    except Exception:
-        pass
-    return "\n\n".join(parts)
+@st.cache_data(ttl=86400, show_spinner=False)
+def _load_catalog() -> dict:
+    """Load and parse condition_sponsor_values.json. Cached for 24 h."""
+    path = Path("catalogs/condition_sponsor_values.json")
+    data = json.loads(path.read_text("utf-8"))
+    conditions   = [v.strip() for v in data["condition_values"].split("|")        if v.strip()]
+    sponsors     = [v.strip() for v in data["sponsor_values"].split("|")          if v.strip()]
+    drug_classes = [v.strip() for v in data.get("drug_class_values", "").split("|") if v.strip()]
+    return {"conditions": conditions, "sponsors": sponsors, "drug_classes": drug_classes}
 
 
-def _load_prompt_template() -> str:
-    try:
-        return Path("prompts/nl_query_prompt.txt").read_text("utf-8")
-    except Exception:
-        return ""
+@st.cache_data(show_spinner=False)
+def _load_static_catalog() -> dict:
+    """Load filter_static_values.json (phases, statuses, countries, agency classes)."""
+    path = Path("catalogs/filter_static_values.json")
+    return json.loads(path.read_text("utf-8"))
 
 
-# ── SQL safety check ─────────────────────────────────────────────────────────
+# ── LLM filter extraction ──────────────────────────────────────────────────────
 
-def _is_safe_sql(sql: str) -> tuple[bool, str]:
-    """Block mutating statements and enforce LIMIT."""
-    upper = sql.upper().strip()
-    forbidden = ["INSERT", "UPDATE", "DELETE", "DROP", "TRUNCATE",
-                 "ALTER", "CREATE", "GRANT", "REVOKE", "COPY"]
-    for kw in forbidden:
-        if kw in upper:
-            return False, f"Statement contains forbidden keyword: {kw}"
-    if not upper.startswith("SELECT") and not upper.startswith("WITH"):
-        return False, "Only SELECT / WITH queries are allowed."
-    if "LIMIT" not in upper:
-        return False, "Query must include a LIMIT clause."
-    return True, ""
-
-
-# ── OpenAI call ───────────────────────────────────────────────────────────────
-
-def _generate_sql(user_question: str, schema_ctx: str, filter_context: str) -> str:
-    """Call OpenAI to generate a SQL query from the user question."""
+def _extract_filters(question: str, catalog: dict) -> dict | None:
+    """
+    Call GPT-4o with the full catalog lists and return structured filter values.
+    The LLM resolves abbreviations and synonyms from the raw catalog text.
+    """
     try:
         import openai
+
         api_key = st.secrets.get("openai_api_key", "")
         if not api_key:
-            return "-- ERROR: OpenAI API key not found in secrets.toml"
+            st.error("OpenAI API key not found in secrets.toml.")
+            return None
 
-        prompt_template = _load_prompt_template()
-        system_prompt = prompt_template or (
-            "You are an expert SQL analyst for a clinical trials analytics platform. "
-            "Generate optimised PostgreSQL queries using ONLY the schema provided. "
+        static = _load_static_catalog()
+        phases         = static.get("phases", [])
+        statuses       = static.get("overall_statuses", [])
+        countries      = static.get("countries", [])
+        agency_classes = static.get("agency_classes", [])
+        drug_classes   = catalog.get("drug_classes", [])
+
+        conditions_str   = " | ".join(catalog["conditions"])
+        sponsors_str     = " | ".join(catalog["sponsors"])
+        drug_classes_str = " | ".join(drug_classes)
+
+        system_prompt = (
+            "You are a filter extraction agent for a clinical trials analytics platform "
+            "used by pharmaceutical industry professionals.\n\n"
+            "Extract structured filter values from the user's question and match them "
+            "EXACTLY to the values in the lists below. Resolve abbreviations, synonyms, "
+            "and common brand/company short-forms yourself using the provided lists.\n\n"
+            "=== CONDITION VALUES (MeSH terms — match indication here) ===\n"
+            f"{conditions_str}\n\n"
+            "=== SPONSOR VALUES (exact company names) ===\n"
+            f"{sponsors_str}\n\n"
+            "=== DRUG CLASS VALUES (ATC class — match atc_class here) ===\n"
+            f"{drug_classes_str}\n\n"
+            "=== PHASE VALUES (use only these exact strings) ===\n"
+            f"{' | '.join(phases)}\n\n"
+            "=== STATUS VALUES (use only these exact strings) ===\n"
+            f"{' | '.join(statuses)}\n\n"
+            "=== COUNTRY VALUES (use only these exact strings) ===\n"
+            f"{' | '.join(countries)}\n\n"
+            "=== AGENCY CLASS VALUES (use only these exact strings) ===\n"
+            f"{' | '.join(agency_classes)}\n\n"
+            "Return a JSON object with exactly these keys:\n"
+            "{\n"
+            '  "indication":     "<exact condition value from the list above, or null>",\n'
+            '  "atc_class":      "<exact drug class value from the list above, or null>",\n'
+            '  "sponsors":       ["<exact sponsor values from the list above>"],\n'
+            '  "phases":         ["<exact phase values from the list above>"],\n'
+            '  "statuses":       ["<exact status values from the list above>"],\n'
+            '  "countries":      ["<exact country values from the list above>"],\n'
+            '  "agency_class":   ["<exact agency class values from the list above>"],\n'
+            '  "has_results":    null | true | false,\n'
+            '  "interpretation": "<one sentence describing what was extracted>"\n'
+            "}\n\n"
             "Rules:\n"
-            "- SELECT only\n"
-            "- Always include LIMIT (max 200)\n"
-            "- Use schema-qualified table names\n"
-            "- No SELECT *\n"
-            "- Push filters to SQL\n"
-            "- subjects_affected > 0 for adverse events\n"
-            "- mesh_type = 'mesh-list' for browse_conditions\n"
-            "Return ONLY the SQL, no explanation.\n\n"
-            f"{schema_ctx}\n\n"
-            f"Active filter context:\n{filter_context}"
+            "- Match indication, sponsors, atc_class to EXACT strings from the lists\n"
+            "- Only include fields where the question clearly specifies a value\n"
+            "- Use empty arrays [] and null for fields not mentioned\n"
+            "- For phase ranges like 'Phase 1/2', include both phases in the array\n"
+            "- 'with results' / 'has results' → has_results: true\n"
+            "- 'no results' / 'without results' → has_results: false\n"
+            "- atc_class: only set if user explicitly names a drug class or mechanism of action\n"
+            "- agency_class: 'industry / pharma / biotech' → INDUSTRY; 'government / NIH / federal' → FED\n"
+            "- countries: match to exact strings from the country list (e.g. 'in the US' → 'United States')\n"
         )
 
         client = openai.OpenAI(api_key=api_key)
@@ -102,119 +128,252 @@ def _generate_sql(user_question: str, schema_ctx: str, filter_context: str) -> s
             model="gpt-4o",
             messages=[
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_question},
+                {"role": "user",   "content": question},
             ],
             temperature=0,
-            max_tokens=600,
+            max_tokens=500,
+            response_format={"type": "json_object"},
         )
-        return response.choices[0].message.content.strip()
+        return json.loads(response.choices[0].message.content.strip())
+
     except Exception as e:
-        return f"-- ERROR generating SQL: {e}"
+        st.error(f"Error extracting filters: {e}")
+        return None
 
 
-# ── Page ─────────────────────────────────────────────────────────────────────
+# ── Indication resolver ───────────────────────────────────────────────────────
+
+def _resolve_indication(raw: str) -> str | None:
+    """
+    Case-insensitive match of an AI-extracted indication against live DB values.
+    Returns the exact DB string (correct casing) or None if no match is found.
+    Uses the already-cached get_indication_options() — no extra DB cost.
+    """
+    from data.repository import get_indication_options
+    db_values = get_indication_options()
+    lookup = {v.lower(): v for v in db_values}
+    return lookup.get(raw.lower())
+
+
+# ── Filter application ─────────────────────────────────────────────────────────
+
+def _apply_filters(extracted: dict) -> None:
+    """
+    Apply extracted filter values to FilterState and sync sidebar widget keys.
+    Clears downstream widget session_state keys so the sidebar's default= logic
+    re-reads from FilterState on the next rerun.
+    """
+    fs = get_filters()
+
+    # 1. Apply indication (global filter) — resolve to exact DB casing first
+    if extracted.get("indication"):
+        resolved = _resolve_indication(extracted["indication"])
+        if resolved:
+            fs.indication_name = resolved
+
+    # 2. Clear ALL widget keys so the sidebar re-reads from FilterState on next rerun.
+    #    Streamlit forbids setting a widget's session_state key after it has been
+    #    instantiated in the same run — popping is the safe alternative.
+    for key in ("sb_indication", "sb_atc",
+                "ms_phase", "ms_status", "ms_sponsor", "ms_agency_class",
+                "ms_brand", "ms_drug_ind", "ms_epcat", "ms_pro_inst",
+                "ms_pro_dom", "ms_country", "ms_study_type"):
+        st.session_state.pop(key, None)
+
+    # 3. Reset FilterState downstream fields
+    fs.sponsor        = []
+    fs.phase          = []
+    fs.overall_status = []
+    fs.country        = []
+    fs.has_results    = None
+
+    # 4. Apply extracted values
+    if extracted.get("sponsors"):
+        fs.sponsor = extracted["sponsors"]
+    if extracted.get("phases"):
+        fs.phase = [p for p in extracted["phases"] if p in PHASE_DB_VALUES]
+    if extracted.get("statuses"):
+        fs.overall_status = [s for s in extracted["statuses"] if s in STATUS_DB_VALUES]
+    if extracted.get("countries"):
+        fs.country = extracted["countries"]
+    if extracted.get("has_results") is not None:
+        fs.has_results = extracted["has_results"]
+        st.session_state.pop("sel_results", None)  # let sidebar re-read from FilterState
+
+    set_filters(fs)
+
+
+# ── Page ──────────────────────────────────────────────────────────────────────
 
 def render(filters: FilterState) -> None:
     page_header(
-        title="Ask the Data",
-        subtitle="Natural language query interface — describe what you want to know and we'll generate optimised SQL.",
-        icon="💬",
-        breadcrumb="Home > Ask the Data",
+        title="AI Query",
+        subtitle="Ask a question about the clinical trial landscape — filters are applied automatically across all tabs.",
+        icon="🤖",
+        breadcrumb="Home > AI Query",
     )
     filter_summary_bar(filters)
 
-    warning_callout(
-        "All generated SQL is read-only (SELECT only) and has a LIMIT enforced. "
-        "Always review the query before running it.",
-        title="Safety Notice",
+    catalog = _load_catalog()
+
+    # ── Question input ─────────────────────────────────────────────────────────
+    st.markdown(
+        "<h3 style='color:#0F4C81;font-weight:700;margin:24px 0 8px 0;font-size:20px;'>"
+        "What do you want to explore?</h3>",
+        unsafe_allow_html=True,
     )
 
-    # ── Instructions ──────────────────────────────────────────────────────────
-    with st.expander("How to use"):
+    col_q, col_btn = st.columns([5, 1])
+    with col_q:
+        question = st.text_input(
+            "Question",
+            placeholder="e.g. Phase 2 trials for NSCLC by AstraZeneca",
+            label_visibility="collapsed",
+            key="ai_question_input",
+        )
+    with col_btn:
+        ask_btn = st.button("Ask ▶", key="ai_ask_btn", use_container_width=True, type="primary")
+
+    # ── Example questions ──────────────────────────────────────────────────────
+    st.markdown(
+        "<p style='color:#6B7280;font-size:13px;font-weight:500;margin:12px 0 6px 0;'>"
+        "Try asking:</p>",
+        unsafe_allow_html=True,
+    )
+    ex_cols = st.columns(4)
+    for i, ex in enumerate(EXAMPLE_QUESTIONS):
+        with ex_cols[i % 4]:
+            if st.button(ex, key=f"ai_ex_{i}", use_container_width=True):
+                st.session_state["ai_pending_q"] = ex
+                st.rerun()
+
+    # Handle pending question from example buttons
+    if "ai_pending_q" in st.session_state:
+        question = st.session_state.pop("ai_pending_q")
+        ask_btn = True
+
+    # ── Process question ───────────────────────────────────────────────────────
+    if ask_btn and question.strip():
+        with st.spinner("Extracting filters from your question…"):
+            extracted = _extract_filters(question.strip(), catalog)
+        if extracted:
+            st.session_state["ai_extracted"]     = extracted
+            st.session_state["ai_question_text"] = question.strip()
+
+    # ── Show extracted filters for review ─────────────────────────────────────
+    if "ai_extracted" in st.session_state:
+        extracted = st.session_state["ai_extracted"]
+        q_text    = st.session_state.get("ai_question_text", "")
+
+        st.markdown(
+            "<hr style='margin:20px 0;border-color:#E5E7EB;'>",
+            unsafe_allow_html=True,
+        )
+
+        # Interpretation card
+        st.markdown(
+            f"""
+            <div style="background:white;border:1px solid #E5E7EB;border-radius:12px;
+                        padding:20px 24px;box-shadow:0 1px 3px rgba(0,0,0,0.04);">
+              <div style="font-size:12px;color:#6B7280;font-weight:600;
+                          letter-spacing:0.06em;text-transform:uppercase;">
+                🎯 Interpreted as
+              </div>
+              <div style="font-size:20px;font-weight:700;color:#0F4C81;margin-top:8px;line-height:1.3;">
+                {extracted.get("interpretation", "—")}
+              </div>
+              <div style="font-size:12px;color:#6B7280;margin-top:6px;">
+                From: <em>"{q_text}"</em>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        # Filter chips
+        chip_items: list[tuple[str, str]] = []
+        if extracted.get("indication"):
+            chip_items.append(("Condition", extracted["indication"]))
+        for sp in extracted.get("sponsors", []):
+            chip_items.append(("Sponsor", sp))
+        for ph in extracted.get("phases", []):
+            chip_items.append(("Phase", ph))
+        for st_ in extracted.get("statuses", []):
+            chip_items.append(("Status", st_))
+        for co in extracted.get("countries", []):
+            chip_items.append(("Country", co))
+        if extracted.get("has_results") is not None:
+            chip_items.append(("Has Results", "Yes" if extracted["has_results"] else "No"))
+
+        if chip_items:
+            chips_html = "".join(
+                f'<span style="display:inline-block;background:{_CHIP_COLORS.get(label,"#6B7280")};'
+                f'color:white;padding:5px 14px;border-radius:20px;font-size:13px;'
+                f'font-weight:500;margin:6px 6px 0 0;">'
+                f'{label}: {value}</span>'
+                for label, value in chip_items
+            )
+            st.markdown(
+                f"<div style='margin:14px 0 8px 0;'>{chips_html}</div>",
+                unsafe_allow_html=True,
+            )
+        else:
+            st.warning("No filter dimensions could be extracted from your question. Try rephrasing.")
+
+        # Action buttons
+        col_apply, col_clear, _ = st.columns([2, 2, 6])
+        with col_apply:
+            if st.button(
+                "✅ Apply to Dashboard", key="ai_apply_btn",
+                type="primary", use_container_width=True,
+            ):
+                _apply_filters(extracted)
+                st.session_state.pop("ai_extracted",     None)
+                st.session_state.pop("ai_question_text", None)
+                st.session_state["ai_applied"] = True
+                st.rerun()
+        with col_clear:
+            if st.button("🔄 Ask Again", key="ai_clear_btn", use_container_width=True):
+                st.session_state.pop("ai_extracted",     None)
+                st.session_state.pop("ai_question_text", None)
+                st.rerun()
+
+    # ── Post-apply confirmation ────────────────────────────────────────────────
+    if st.session_state.pop("ai_applied", False):
+        st.success(
+            "✅ Filters applied! Switch to any other tab to explore the filtered data. "
+            "You can also refine filters manually using the sidebar."
+        )
+
+    # ── How it works ───────────────────────────────────────────────────────────
+    with st.expander("How does this work?"):
         st.markdown("""
-**How it works:**
-1. Type your question in natural language
-2. The system generates an optimised PostgreSQL query
-3. Review the generated SQL and explanation
-4. Click **Run Query** to execute it
-5. Download results as CSV
+**AI-Powered Filter Extraction**
 
-**Example questions:**
-- "Show me the top 10 sponsors by number of Phase 3 trials in non-small cell lung cancer"
-- "What are the most common adverse events for pembrolizumab?"
-- "How many trials report EQ-5D as a PRO instrument by year?"
-- "List drugs with both Phase 2 and Phase 3 trials that have posted results"
+1. Type a question in natural language about the clinical trial landscape
+2. Our AI reads your question and extracts relevant filter values — indication, sponsor, phase, status, etc.
+3. Values are matched to exact canonical terms used in the database
+4. Click **Apply to Dashboard** to scope all tabs to your criteria
+5. Refine further using the sidebar filters as usual
 
-**Data scope:** Results respect the active global filters (indication / drug class).
+**Supported filter dimensions**
+
+| Dimension | Examples |
+|---|---|
+| Indication / Disease | NSCLC, TNBC, AML, DLBCL, breast cancer, prostate cancer |
+| Sponsor | AstraZeneca, BMS, Merck, Pfizer, Roche, Novartis, AZ, MSD |
+| Phase | Phase 1, Phase 2, Phase 3, Phase 1/2, Phase 2/3 |
+| Status | Recruiting, Completed, Terminated |
+| Results | "with results", "posted results", "no results" |
+| Country | "in the US", "Japan", "Europe" |
+
+**Example questions**
+- *"Phase 2 trials for NSCLC by AstraZeneca"*
+- *"Completed breast cancer trials with posted results from Pfizer or Roche"*
+- *"Recruiting DLBCL trials"*
+- *"Merck's Phase 3 oncology pipeline"*
+- *"AML trials with results posted"*
+- *"Phase 1/2 TNBC immunotherapy trials"*
+- *"CLL trials that are recruiting"*
+- *"Novartis solid tumour pipeline — what's in Phase 3?"*
         """)
-
-    # ── Input ─────────────────────────────────────────────────────────────────
-    schema_ctx = _load_schema_context()
-
-    question = st.text_area(
-        "Your question:",
-        placeholder="e.g. What are the top 15 adverse events by subjects affected in completed trials?",
-        height=100,
-        key="nl_question",
-    )
-
-    if st.button("🔍 Generate SQL", key="btn_gen_sql", use_container_width=False):
-        if not question.strip():
-            st.warning("Please enter a question.")
-            return
-
-        # Build filter context description for the prompt
-        active = filters.active_filter_summary()
-        filter_context = (
-            "Active filters: " + "; ".join(f"{k}={v}" for k, v in active.items())
-            if active else "No filters active (full dataset)."
-        )
-
-        with st.spinner("Generating SQL…"):
-            generated_sql = _generate_sql(question, schema_ctx, filter_context)
-
-        st.session_state["atd_sql"]      = generated_sql
-        st.session_state["atd_question"] = question
-        st.session_state["atd_results"]  = None
-
-    # ── Display / edit generated SQL ──────────────────────────────────────────
-    if "atd_sql" in st.session_state and st.session_state["atd_sql"]:
-        st.markdown("#### Generated SQL")
-        st.caption(f"Question: *{st.session_state.get('atd_question', '')}*")
-
-        edited_sql = st.text_area(
-            "Review and edit SQL before running:",
-            value=st.session_state["atd_sql"],
-            height=220,
-            key="atd_editable_sql",
-        )
-
-        # Safety check
-        is_safe, reason = _is_safe_sql(edited_sql)
-        if not is_safe:
-            danger_callout(f"Query blocked: {reason}", title="Query Blocked")
-        else:
-            col1, col2 = st.columns([1, 4])
-            with col1:
-                run_btn = st.button("▶ Run Query", key="btn_run_sql", use_container_width=True)
-            with col2:
-                st.caption("✅ Query passed safety checks (SELECT only, LIMIT present)")
-
-            if run_btn:
-                with st.spinner("Running query…"):
-                    try:
-                        result_df = run_nl_query(edited_sql)
-                        st.session_state["atd_results"] = result_df
-                    except Exception as e:
-                        st.error(f"Query failed: {e}")
-                        st.session_state["atd_results"] = None
-
-    # ── Results ───────────────────────────────────────────────────────────────
-    if st.session_state.get("atd_results") is not None:
-        result_df = st.session_state["atd_results"]
-        if result_df.empty:
-            st.info("Query returned no rows.")
-        else:
-            st.markdown(f"#### Results — {len(result_df):,} rows")
-            ag_table(result_df, height=460, key="atd_results_table")
-            csv_download_button(result_df, "nl_query_results.csv")

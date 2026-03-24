@@ -418,14 +418,20 @@ def get_country_distribution(filters: FilterState, limit: int = 20) -> pd.DataFr
 # ════════════════════════════════════════════════════════════════════════════
 
 @st.cache_data(ttl=300, show_spinner=False)
-def get_pipeline_kpis(indication: str | None) -> dict:
+def get_pipeline_kpis(indication: str | None, sponsors: tuple[str, ...] = ()) -> dict:
     """Pipeline KPIs from onco_pipeline_trials, filtered by condition matching indication."""
     params: dict = {}
     cond_where = ""
     if indication:
         cond_where = "WHERE LOWER(pt.condition) LIKE :ind_like"
         params["ind_like"] = f"%{indication.lower()}%"
+    if sponsors:
+        sp_params = {f"_sp{i}": s for i, s in enumerate(sponsors)}
+        sp_clause = "AND pt.sponsor_name IN (" + ", ".join(f":_sp{i}" for i in range(len(sponsors))) + ")"
+        cond_where = (cond_where + " " + sp_clause) if cond_where else ("WHERE " + sp_clause[4:])
+        params.update(sp_params)
 
+    pros_where = cond_where.replace("WHERE", "WHERE", 1)  # same conditions apply to PRO query
     sql = f"""
         SELECT
             COUNT(DISTINCT pt.nct_id)            AS pipeline_trials,
@@ -439,7 +445,7 @@ def get_pipeline_kpis(indication: str | None) -> dict:
         SELECT COUNT(DISTINCT pp.nct_id) AS with_pros
         FROM public.onco_pipeline_design_outcomes_pro pp
         JOIN public.onco_pipeline_trials pt ON pt.nct_id = pp.nct_id
-        {'WHERE LOWER(pt.condition) LIKE :ind_like' if indication else ''}
+        {pros_where}
     """
     df     = query_aact(sql,      params)
     pro_df = query_aact(sql_pros, params)
@@ -454,12 +460,16 @@ def get_pipeline_kpis(indication: str | None) -> dict:
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def get_pipeline_by_sponsor(indication: str | None, limit: int = 20) -> pd.DataFrame:
+def get_pipeline_by_sponsor(indication: str | None, sponsors: tuple[str, ...] = (), limit: int = 20) -> pd.DataFrame:
     params: dict = {}
     cond_where = "WHERE pt.sponsor_name IS NOT NULL"
     if indication:
         cond_where += " AND LOWER(pt.condition) LIKE :ind_like"
         params["ind_like"] = f"%{indication.lower()}%"
+    if sponsors:
+        sp_params = {f"_sp{i}": s for i, s in enumerate(sponsors)}
+        cond_where += " AND pt.sponsor_name IN (" + ", ".join(f":_sp{i}" for i in range(len(sponsors))) + ")"
+        params.update(sp_params)
     sql = f"""
         SELECT
             pt.sponsor_name              AS sponsor,
@@ -473,12 +483,16 @@ def get_pipeline_by_sponsor(indication: str | None, limit: int = 20) -> pd.DataF
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def get_pipeline_by_indication(indication: str | None, limit: int = 25) -> pd.DataFrame:
+def get_pipeline_by_indication(indication: str | None, sponsors: tuple[str, ...] = (), limit: int = 25) -> pd.DataFrame:
     params: dict = {}
     cond_where = "WHERE pt.condition IS NOT NULL"
     if indication:
         cond_where += " AND LOWER(pt.condition) LIKE :ind_like"
         params["ind_like"] = f"%{indication.lower()}%"
+    if sponsors:
+        sp_params = {f"_sp{i}": s for i, s in enumerate(sponsors)}
+        cond_where += " AND pt.sponsor_name IN (" + ", ".join(f":_sp{i}" for i in range(len(sponsors))) + ")"
+        params.update(sp_params)
     sql = f"""
         SELECT
             pt.condition                 AS condition,
@@ -492,12 +506,16 @@ def get_pipeline_by_indication(indication: str | None, limit: int = 25) -> pd.Da
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def get_pipeline_top_interventions(indication: str | None, limit: int = 25) -> pd.DataFrame:
+def get_pipeline_top_interventions(indication: str | None, sponsors: tuple[str, ...] = (), limit: int = 25) -> pd.DataFrame:
     params: dict = {}
     cond_where = "WHERE pt.intervention_name IS NOT NULL"
     if indication:
         cond_where += " AND LOWER(pt.condition) LIKE :ind_like"
         params["ind_like"] = f"%{indication.lower()}%"
+    if sponsors:
+        sp_params = {f"_sp{i}": s for i, s in enumerate(sponsors)}
+        cond_where += " AND pt.sponsor_name IN (" + ", ".join(f":_sp{i}" for i in range(len(sponsors))) + ")"
+        params.update(sp_params)
     sql = f"""
         SELECT
             pt.intervention_name         AS intervention,
@@ -511,13 +529,17 @@ def get_pipeline_top_interventions(indication: str | None, limit: int = 25) -> p
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def get_pipeline_sponsor_indication_heatmap(indication: str | None) -> pd.DataFrame:
+def get_pipeline_sponsor_indication_heatmap(indication: str | None, sponsors: tuple[str, ...] = ()) -> pd.DataFrame:
     """Return sponsor × condition counts for heatmap."""
     params: dict = {}
     cond_where = "WHERE pt.sponsor_name IS NOT NULL AND pt.condition IS NOT NULL"
     if indication:
         cond_where += " AND LOWER(pt.condition) LIKE :ind_like"
         params["ind_like"] = f"%{indication.lower()}%"
+    if sponsors:
+        sp_params = {f"_sp{i}": s for i, s in enumerate(sponsors)}
+        cond_where += " AND pt.sponsor_name IN (" + ", ".join(f":_sp{i}" for i in range(len(sponsors))) + ")"
+        params.update(sp_params)
     sql = f"""
         WITH ranked_sponsors AS (
             SELECT sponsor_name, COUNT(DISTINCT nct_id) AS cnt
@@ -545,12 +567,17 @@ def get_pipeline_sponsor_indication_heatmap(indication: str | None) -> pd.DataFr
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def get_pipeline_pro_usage(indication: str | None, limit: int = 20) -> pd.DataFrame:
+def get_pipeline_pro_usage(indication: str | None, sponsors: tuple[str, ...] = (), limit: int = 20) -> pd.DataFrame:
     params: dict = {}
     ind_filter = ""
     if indication:
         ind_filter = "AND LOWER(pt.condition) LIKE :ind_like"
         params["ind_like"] = f"%{indication.lower()}%"
+    sp_filter = ""
+    if sponsors:
+        sp_params = {f"_sp{i}": s for i, s in enumerate(sponsors)}
+        sp_filter = "AND pt.sponsor_name IN (" + ", ".join(f":_sp{i}" for i in range(len(sponsors))) + ")"
+        params.update(sp_params)
     sql = f"""
         SELECT
             pp.instrument_name,
@@ -559,6 +586,7 @@ def get_pipeline_pro_usage(indication: str | None, limit: int = 20) -> pd.DataFr
         JOIN public.onco_pipeline_trials pt ON pt.nct_id = pp.nct_id
         WHERE pp.instrument_name IS NOT NULL
           {ind_filter}
+          {sp_filter}
         GROUP BY 1 ORDER BY 2 DESC LIMIT {limit}
     """
     return query_aact(sql, params)

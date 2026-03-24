@@ -5,10 +5,10 @@ Run with:
     streamlit run app.py
 """
 import base64
+import importlib
 from pathlib import Path
 from PIL import Image
 import streamlit as st
-from streamlit_option_menu import option_menu
 
 # ── Logo — loaded once at startup ─────────────────────────────────────────────
 _LOGO_PATH  = Path(__file__).parent / "assets" / "logos" / "APP_logo1.png"
@@ -27,30 +27,25 @@ st.set_page_config(
     },
 )
 
-# ── Nav items: (label, page_key, group) ───────────────────────────────────────
-NAV_ITEMS = [
-    ("Home",         "home",              0),
-    ("Pipeline",     "pipeline",          1),
-    ("Drug Detail",  "drug_detail",       2),
-    ("Sponsors",     "sponsor_benchmark", 2),
-    ("Trial Design", "trial_design",      3),
-    ("Endpoints",    "planned_endpoints", 3),
-    ("Outcomes",     "reported_outcomes", 4),
-    ("Scores",       "outcome_scores",    4),
-    ("PRO Overview", "pro_overview",      5),
-    ("Trial Groups", "trial_groups",      5),
-    ("Safety",       "safety_analysis",   6),
-    ("Ask the Data", "ask_the_data",      7),
-]
+# ── Background data preload (starts once per process on first page load) ──────
+from utils.preloader import start_background_preload
+start_background_preload()
 
-_NAV_LABELS = [label for label, _, _ in NAV_ITEMS]
-_NAV_KEYS   = [key   for _, key, _ in NAV_ITEMS]
-_NAV_ICONS  = [
-    "house", "graph-up", "capsule", "building",
-    "clipboard-check", "bullseye", "bar-chart-line", "123",
-    "person-check", "collection", "shield-exclamation", "chat-dots",
+# ── Page registry: (tab label, module path) ───────────────────────────────────
+PAGE_MAP = [
+    ("🏠 Home",          "views.home"),
+    ("💬 Ask the Data",  "views.ask_the_data"),
+    ("📈 Pipeline",      "views.pipeline_landscape"),
+    ("💊 Drug Detail",   "views.drug_detail"),
+    ("🏢 Sponsors",      "views.sponsor_benchmark"),
+    ("📋 Trial Design",  "views.trial_design"),
+    ("🎯 Endpoints",     "views.planned_endpoints"),
+    ("📊 Outcomes",      "views.reported_outcomes"),
+    ("🔢 Scores",        "views.outcome_scores"),
+    ("👤 PRO Overview",  "views.pro_overview"),
+    ("🗂️ Trial Groups",  "views.trial_groups"),
+    ("🛡️ Safety",        "views.safety_analysis"),
 ]
-_valid_keys = set(_NAV_KEYS)
 
 # ── Global CSS ────────────────────────────────────────────────────────────────
 st.markdown("""
@@ -67,28 +62,13 @@ footer                           { visibility: hidden !important; }
 [data-testid="stDeployButton"]   { display: none !important; }
 [data-testid="stToolbar"]        { display: none !important; }
 
-/* ── Stick the very first block (our nav) to the top ────────────────────── */
-section[data-testid="stMain"] div.block-container > div:first-child {
-    position: sticky;
-    top: 0;
-    z-index: 999;
-    background: #FFFFFF;
-    border-bottom: 1px solid #E2E8F0;
-    box-shadow: 0 1px 4px rgba(0,0,0,.06);
-    margin-left:  -1rem;
-    margin-right: -1rem;
-    padding-left:  1rem;
-    padding-right: 1rem;
-    overflow: visible;
-}
-
-/* ── Hide scrollbar on the nav (webkit) ─────────────────────────────────── */
-.nav-pills::-webkit-scrollbar { display: none; }
-
 /* ── Main content spacing ────────────────────────────────────────────────── */
 .block-container {
     padding-top: 0 !important;
     padding-bottom: 3rem !important;
+    padding-left: 1.5rem !important;
+    padding-right: 1.5rem !important;
+    max-width: 100% !important;
 }
 
 /* ── Sidebar ─────────────────────────────────────────────────────────────── */
@@ -224,6 +204,7 @@ section[data-testid="stSidebar"] details > div {
     flex: 1 !important;
     display: flex !important;
     flex-direction: column !important;
+    justify-content: flex-start !important;
 }
 [data-testid="stVerticalBlock"] > .element-container {
     margin-bottom: 0.5rem !important;
@@ -263,198 +244,117 @@ h1, h2, h3 { color: #0F4C81; }
 _USERNAME = "admin"
 _PASSWORD = "password#1234"
 
+_login_slot = st.empty()
+
 if not st.session_state.get("authenticated", False):
-    st.markdown(f"""
-    <style>
-    section[data-testid="stSidebar"] {{ display: none !important; }}
-    .block-container {{ padding-top: 0 !important; }}
-
-    /* Card: style the middle column's vertical block */
-    div[data-testid="stMainBlockContainer"]
-        div[data-testid="stHorizontalBlock"]
-        > div[data-testid="stColumn"]:nth-child(2)
-        > div[data-testid="stVerticalBlock"] {{
-            background: #FFFFFF;
-            border: 1px solid #E5E7EB;
-            border-radius: 16px;
-            box-shadow: 0 4px 32px rgba(15,76,129,0.12);
-            padding: 40px 36px 36px !important;
-            margin-top: 80px;
-    }}
-
-    /* Sign in button */
-    div[data-testid="stMainBlockContainer"] .stButton > button {{
-        background: #0F4C81 !important;
-        color: white !important;
-        border: none !important;
-        border-radius: 8px !important;
-        font-weight: 600 !important;
-        font-size: 15px !important;
-        height: 44px !important;
-        letter-spacing: 0.01em;
-        margin-top: 4px;
-    }}
-    div[data-testid="stMainBlockContainer"] .stButton > button:hover {{
-        background: #0D3F6E !important;
-    }}
-    </style>
-
-    <div style="height:0"></div>
-    """, unsafe_allow_html=True)
-
-    _, col, _ = st.columns([1, 1.4, 1])
-    with col:
+    with _login_slot.container():
         st.markdown(f"""
-        <div style="text-align:center; margin-bottom:24px;">
-            <img src="data:image/png;base64,{_LOGO_B64}"
-                 style="height:52px; margin-bottom:18px; display:block; margin-left:auto; margin-right:auto;">
-            <div style="font-size:21px; font-weight:700; color:#0F4C81; margin-bottom:5px; letter-spacing:-0.01em;">
-                Clinical Trials Intelligence Platform
-            </div>
-            <div style="font-size:14px; color:#6B7280;">
-                Sign in to continue
-            </div>
-        </div>
-        <hr style="border:none; border-top:1px solid #E5E7EB; margin:0 0 20px 0;">
+        <style>
+        section[data-testid="stSidebar"] {{ display: none !important; }}
+        .block-container {{ padding-top: 0 !important; }}
+
+        /* Card: style the middle column's vertical block */
+        div[data-testid="stMainBlockContainer"]
+            div[data-testid="stHorizontalBlock"]
+            > div[data-testid="stColumn"]:nth-child(2)
+            > div[data-testid="stVerticalBlock"] {{
+                background: #FFFFFF;
+                border: 1px solid #E5E7EB;
+                border-radius: 16px;
+                box-shadow: 0 4px 32px rgba(15,76,129,0.12);
+                padding: 40px 36px 36px !important;
+                margin-top: 80px;
+        }}
+
+        /* Sign in button */
+        div[data-testid="stMainBlockContainer"] .stButton > button {{
+            background: #0F4C81 !important;
+            color: white !important;
+            border: none !important;
+            border-radius: 8px !important;
+            font-weight: 600 !important;
+            font-size: 15px !important;
+            height: 44px !important;
+            letter-spacing: 0.01em;
+            margin-top: 4px;
+        }}
+        div[data-testid="stMainBlockContainer"] .stButton > button:hover {{
+            background: #0D3F6E !important;
+        }}
+        </style>
+
+        <div style="height:0"></div>
         """, unsafe_allow_html=True)
 
-        username = st.text_input("Username", placeholder="Enter your username")
-        password = st.text_input("Password", placeholder="Enter your password", type="password")
+        _, col, _ = st.columns([1, 1.4, 1])
+        with col:
+            st.markdown(f"""
+            <div style="text-align:center; margin-bottom:24px;">
+                <img src="data:image/png;base64,{_LOGO_B64}"
+                     style="height:52px; margin-bottom:18px; display:block; margin-left:auto; margin-right:auto;">
+                <div style="font-size:21px; font-weight:700; color:#0F4C81; margin-bottom:5px; letter-spacing:-0.01em;">
+                    Clinical Trials Intelligence Platform
+                </div>
+                <div style="font-size:14px; color:#6B7280;">
+                    Sign in to continue
+                </div>
+            </div>
+            <hr style="border:none; border-top:1px solid #E5E7EB; margin:0 0 20px 0;">
+            """, unsafe_allow_html=True)
 
-        st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
+            username = st.text_input("Username", placeholder="Enter your username")
+            password = st.text_input("Password", placeholder="Enter your password", type="password")
 
-        if st.button("Sign in", use_container_width=True):
-            if username == _USERNAME and password == _PASSWORD:
-                st.session_state["authenticated"] = True
-                st.session_state.pop("_login_attempted", None)
-                st.rerun()
-            else:
-                st.session_state["_login_attempted"] = True
-                st.rerun()
+            st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
 
-        if st.session_state.get("_login_attempted", False):
-            st.error("Incorrect username or password.")
+            if st.button("Sign in", use_container_width=True):
+                if username == _USERNAME and password == _PASSWORD:
+                    st.session_state["authenticated"] = True
+                    st.session_state.pop("_login_attempted", None)
+                    st.rerun()
+                else:
+                    st.session_state["_login_attempted"] = True
+                    st.rerun()
+
+            if st.session_state.get("_login_attempted", False):
+                st.error("Incorrect username or password.")
 
     st.stop()
 
-# ── Resolve initial page from URL (used only when session has no nav state) ───
-# Deep-links like ?nav=landscape will correctly initialize the nav on first load.
-# Once the user navigates within the session, option_menu's own session_state
-# takes over and the URL param is only kept in sync for bookmarking.
-_qp_nav      = st.query_params.get("nav", "home")
-_qp_page     = _qp_nav if _qp_nav in _valid_keys else "home"
-_default_idx = _NAV_KEYS.index(_qp_page)
-
-# ── Top navigation ────────────────────────────────────────────────────────────
-# option_menu is a Streamlit widget: clicking it triggers a rerun (same session),
-# NOT a browser page reload.  This is what keeps session_state — and therefore
-# all sidebar filter values — alive across page changes.
-selected = option_menu(
-    menu_title="",
-    options=_NAV_LABELS,
-    icons=_NAV_ICONS,
-    default_index=_default_idx,
-    orientation="horizontal",
-    key="main_nav",
-    styles={
-        "container": {
-            "padding": "0",
-            "background-color": "#FFFFFF",
-            "border": "none",
-            "margin": "0",
-            "font-family": "'DM Sans', system-ui, sans-serif",
-        },
-        "nav-pills": {
-            "flex-wrap": "nowrap",
-            "overflow-x": "auto",
-            "overflow-y": "hidden",
-            "-ms-overflow-style": "none",
-            "scrollbar-width": "none",
-            "gap": "4px",
-        },
-        "icon": {
-            "font-size": "0.70rem",
-            "color": "#9CA3AF",
-        },
-        "nav-link": {
-            "font-size": "0.78rem",
-            "font-weight": "500",
-            "color": "#6B7280",
-            "padding": "10px 8px",
-            "border-radius": "0",
-            "border-bottom": "2px solid transparent",
-            "white-space": "nowrap",
-            "letter-spacing": "0.01em",
-            "flex": "0 0 auto",
-            "text-align": "center",
-            "justify-content": "center",
-            "--hover-color": "#F8FAFC",
-            "font-family": "'DM Sans', system-ui, sans-serif",
-        },
-        "nav-link-selected": {
-            "background-color": "#E8F0FB",
-            "color": "#0F4C81",
-            "font-weight": "600",
-            "border-bottom": "2px solid #0F4C81",
-        },
-    },
-)
-
-current_page = _NAV_KEYS[_NAV_LABELS.index(selected)]
-
-# Keep URL in sync for bookmarking — does NOT trigger a browser reload
-if st.query_params.get("nav") != current_page:
-    st.query_params["nav"] = current_page
-
-# ── Sidebar filters (unchanged; sidebar is filters only) ─────────────────────
+# ── Sidebar filters ───────────────────────────────────────────────────────────
 from components.filters import render_sidebar
 filters = render_sidebar()
 
-# ── Route to pages ────────────────────────────────────────────────────────────
-if current_page == "home":
-    from views.home import render
-    render(filters)
+# ── Tab navigation + routing ──────────────────────────────────────────────────
+FILTER_REQUIRED = {
+    "views.outcome_scores",
+    "views.safety_analysis",
+    "views.trial_groups",
+}
 
-elif current_page == "pipeline":
-    from views.pipeline_landscape import render
-    render(filters)
+tabs = st.tabs([label for label, _ in PAGE_MAP])
 
-elif current_page == "drug_detail":
-    from views.drug_detail import render
-    render(filters)
-
-elif current_page == "sponsor_benchmark":
-    from views.sponsor_benchmark import render
-    render(filters)
-
-elif current_page == "trial_design":
-    from views.trial_design import render
-    render(filters)
-
-elif current_page == "planned_endpoints":
-    from views.planned_endpoints import render
-    render(filters)
-
-elif current_page == "reported_outcomes":
-    from views.reported_outcomes import render
-    render(filters)
-
-elif current_page == "outcome_scores":
-    from views.outcome_scores import render
-    render(filters)
-
-elif current_page == "pro_overview":
-    from views.pro_overview import render
-    render(filters)
-
-elif current_page == "trial_groups":
-    from views.trial_groups import render
-    render(filters)
-
-elif current_page == "safety_analysis":
-    from views.safety_analysis import render
-    render(filters)
-
-elif current_page == "ask_the_data":
-    from views.ask_the_data import render
-    render(filters)
+for tab, (_, module_path) in zip(tabs, PAGE_MAP):
+    with tab:
+        if module_path in FILTER_REQUIRED and not filters.has_any_filter():
+            st.markdown(
+                """
+                <div style="text-align:center;padding:60px 20px;">
+                  <div style="font-size:48px;margin-bottom:16px;">🔍</div>
+                  <h3 style="color:#0F4C81;font-weight:700;">Filter Required</h3>
+                  <p style="color:#6B7280;font-size:15px;max-width:420px;margin:0 auto;">
+                    Please select at least one filter in the sidebar
+                    (indication, drug class, sponsor, phase, etc.)
+                    to load this tab.
+                  </p>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+        else:
+            try:
+                module = importlib.import_module(module_path)
+                module.render(filters)
+            except Exception as e:
+                st.error(f"Error loading {module_path}: {e}")
+                st.exception(e)

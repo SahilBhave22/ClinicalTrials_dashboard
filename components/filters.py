@@ -19,40 +19,76 @@ from data.repository import (
 from config.settings import APP_TITLE, APP_ICON
 
 
-# ── Fallback values from catalog JSON ────────────────────────────────────────
+# ── Static catalog loaders (no DB calls) ─────────────────────────────────────
 
-def _load_catalog_fallback() -> tuple[list[str], list[str]]:
-    """Load indication / atc_class values from the drugs catalog JSON as fallback."""
+@st.cache_data(show_spinner=False)
+def _load_condition_sponsor_catalog() -> dict:
+    """Load condition/sponsor/drug-class values from the condition_sponsor catalog."""
     try:
-        catalog_path = Path("catalogs/drugs_schema_catalog.json")
-        data = json.loads(catalog_path.read_text(encoding="utf-8"))
-        indications = [
-            v.strip() for v in data.get("drug_indication_values", "").split(",") if v.strip()
-        ]
-        atc_classes = [
-            v.strip() for v in data.get("drug_class_values", "").split(",") if v.strip()
-        ]
-        return sorted(indications), sorted(atc_classes)
+        path = Path("catalogs/condition_sponsor_values.json")
+        return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        return [], []
+        return {}
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(show_spinner=False)
+def _load_static_filter_values() -> dict:
+    """Load pre-set filter values (study types, phases, statuses, countries, etc.)."""
+    try:
+        path = Path("catalogs/filter_static_values.json")
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+@st.cache_data(show_spinner=False)
 def _get_indication_list() -> list[str]:
-    opts = get_indication_options()
-    if opts:
-        return opts
-    fallback_ind, _ = _load_catalog_fallback()
-    return fallback_ind
+    """Return condition list from catalog (instant). DB enrichment skipped."""
+    data = _load_condition_sponsor_catalog()
+    values = [v.strip() for v in data.get("condition_values", "").split("|") if v.strip()]
+    if values:
+        return sorted(values)
+    # fallback: try DB
+    return get_indication_options()
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(show_spinner=False)
 def _get_atc_class_list() -> list[str]:
-    opts = get_atc_class_options()
-    if opts:
-        return opts
-    _, fallback_atc = _load_catalog_fallback()
-    return fallback_atc
+    """Return ATC drug class list from catalog (instant). DB enrichment skipped."""
+    data = _load_condition_sponsor_catalog()
+    values = [v.strip() for v in data.get("drug_class_values", "").split("|") if v.strip()]
+    if values:
+        return sorted(values)
+    # fallback: try DB
+    return get_atc_class_options()
+
+
+@st.cache_data(show_spinner=False)
+def _get_sponsor_list() -> list[str]:
+    """Return sponsor list from catalog (instant)."""
+    data = _load_condition_sponsor_catalog()
+    return sorted([v.strip() for v in data.get("sponsor_values", "").split("|") if v.strip()])
+
+
+def _get_static_opts() -> dict:
+    """
+    Return filter options entirely from static catalogs — no DB call.
+    Used when no global filter is active (initial sidebar render).
+    """
+    sv = _load_static_filter_values()
+    return {
+        "sponsors":         _get_sponsor_list(),
+        "study_types":      sv.get("study_types", []),
+        "phases":           sv.get("phases", []),
+        "statuses":         sv.get("overall_statuses", []),
+        "countries":        sv.get("countries", []),
+        "agency_classes":   sv.get("agency_classes", []),
+        "categories":       sv.get("endpoint_categories", []),
+        "pro_instruments":  sv.get("pro_instruments", []),
+        "domains":          sv.get("pro_domains", []),
+        "brands":           [],   # dynamic — populated only when global filter active
+        "drug_indications": [],   # dynamic — populated only when global filter active
+    }
 
 
 # ── Global filter clear helper ────────────────────────────────────────────────
@@ -165,7 +201,7 @@ def render_sidebar() -> FilterState:
 
         # ── GLOBAL FILTERS ────────────────────────────────────────────────────
         st.markdown("#### 🌐 Global Filters")
-        st.caption("These filters drive all pages. Indication uses MeSH conditions (browse_conditions); Drug Class uses ATC codes.")
+        st.caption("Drug class and MeSH condition filters")
 
         indication_opts = [""] + _get_indication_list()
         atc_opts        = [""] + _get_atc_class_list()
@@ -173,53 +209,42 @@ def render_sidebar() -> FilterState:
         prev_ind = fs.indication_name or ""
         prev_atc = fs.atc_class_name or ""
 
-        ind_col, ind_clear = st.columns([5, 1])
-        with ind_col:
-            sel_ind = st.selectbox(
-                "Indication (Disease Area)",
-                options=indication_opts,
-                index=indication_opts.index(prev_ind) if prev_ind in indication_opts else 0,
-                help="MeSH mesh-list condition from ctgov.browse_conditions. Scopes all pages to trials with this condition that are also in drug_trials.",
-                key="sb_indication",
-                on_change=_on_global_filter_change,
-            )
-        with ind_clear:
-            st.markdown("<div style='margin-top:26px'></div>", unsafe_allow_html=True)
-            if prev_ind:
-                st.button("✕", key="btn_clear_ind", help="Clear Indication filter",
-                          use_container_width=True,
-                          on_click=_do_clear_filter, kwargs={"clear_ind": True})
+        sel_ind = st.selectbox(
+            "Condition (Disease Area)",
+            options=indication_opts,
+            index=indication_opts.index(prev_ind) if prev_ind in indication_opts else 0,
+            help="MeSH mesh-list condition from ctgov.browse_conditions. Scopes all pages to trials with this condition that are also in drug_trials.",
+            key="sb_indication",
+            on_change=_on_global_filter_change,
+        )
 
-        atc_col, atc_clear = st.columns([5, 1])
-        with atc_col:
-            sel_atc = st.selectbox(
-                "Drug Class (ATC)",
-                options=atc_opts,
-                index=atc_opts.index(prev_atc) if prev_atc in atc_opts else 0,
-                help="Filters all data to trials associated with this drug class. "
-                     "Independent of Indication.",
-                key="sb_atc",
-                on_change=_on_global_filter_change,
-            )
-        with atc_clear:
-            st.markdown("<div style='margin-top:26px'></div>", unsafe_allow_html=True)
-            if prev_atc:
-                st.button("✕", key="btn_clear_atc", help="Clear Drug Class filter",
-                          use_container_width=True,
-                          on_click=_do_clear_filter, kwargs={"clear_atc": True})
+        sel_atc = st.selectbox(
+            "Drug Class (ATC)",
+            options=atc_opts,
+            index=atc_opts.index(prev_atc) if prev_atc in atc_opts else 0,
+            help="Filters all data to trials associated with this drug class. "
+                 "Independent of Indication.",
+            key="sb_atc",
+            on_change=_on_global_filter_change,
+        )
 
         # Re-read fs after potential on_change reset, then sync widget values
         fs = get_filters()
         fs.indication_name = sel_ind or None
         fs.atc_class_name  = sel_atc or None
 
-        # ── Downstream filter options (constrained by global) ──────────────
-        opts = get_filter_options(fs.indication_name, fs.atc_class_name)
+        # ── Downstream filter options ──────────────────────────────────────
+        # Use static catalogs when no global filter is active (instant render).
+        # Fall back to DB-scoped query only when user has selected a global filter.
+        if fs.indication_name or fs.atc_class_name:
+            opts = get_filter_options(fs.indication_name, fs.atc_class_name)
+        else:
+            opts = _get_static_opts()
 
         st.markdown("<hr style='margin:12px 0;border-color:rgba(255,255,255,0.15);'>", unsafe_allow_html=True)
         st.markdown("#### 🔽 Downstream Filters")
 
-        with st.expander("Trial Attributes", expanded=True):
+        with st.expander("Trial Attributes", expanded=False):
             fs.study_type = st.multiselect(
                 "Study Type",
                 options=opts.get("study_types", []),
@@ -279,17 +304,17 @@ def render_sidebar() -> FilterState:
             )
             fs.drug_indication = sel_drug_ind or None
 
-        with st.expander("Enrollment"):
-            enr_min = st.number_input(
-                "Min Enrollment", min_value=0, value=fs.enrollment_min or 0,
-                step=10, key="ni_enr_min",
-            )
-            enr_max = st.number_input(
-                "Max Enrollment", min_value=0, value=fs.enrollment_max or 0,
-                step=10, key="ni_enr_max",
-            )
-            fs.enrollment_min = int(enr_min) if enr_min > 0 else None
-            fs.enrollment_max = int(enr_max) if enr_max > 0 else None
+        # with st.expander("Enrollment"):
+        #     enr_min = st.number_input(
+        #         "Min Enrollment", min_value=0, value=fs.enrollment_min or 0,
+        #         step=10, key="ni_enr_min",
+        #     )
+        #     enr_max = st.number_input(
+        #         "Max Enrollment", min_value=0, value=fs.enrollment_max or 0,
+        #         step=10, key="ni_enr_max",
+        #     )
+        #     fs.enrollment_min = int(enr_min) if enr_min > 0 else None
+        #     fs.enrollment_max = int(enr_max) if enr_max > 0 else None
 
         with st.expander("Endpoints / Outcomes"):
             fs.endpoint_category = st.multiselect(
