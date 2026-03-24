@@ -406,7 +406,6 @@ def phase_bar(df: pd.DataFrame, x: str, y: str, title: str = "") -> go.Figure:
         title=dict(text=title, font=dict(size=14, color="#0F4C81")),
         showlegend=False,  # x-axis already labels each phase; legend is redundant
     )
-    fig.update_layout(margin=dict(l=40, r=20, t=50, b=40))
     fig.update_yaxes(**_AXIS)
     _apply_category_axis(fig, df[x].tolist(), axis="x")
     fig.update_traces(marker_line_width=0)
@@ -424,7 +423,6 @@ def status_bar(df: pd.DataFrame, x: str, y: str, title: str = "") -> go.Figure:
         title=dict(text=title, font=dict(size=14, color="#0F4C81")),
         showlegend=False,  # x-axis already labels each status; legend is redundant
     )
-    fig.update_layout(margin=dict(l=40, r=20, t=50, b=40))
     fig.update_yaxes(**_AXIS)
     _apply_category_axis(fig, df[x].tolist(), axis="x")
     fig.update_traces(marker_line_width=0)
