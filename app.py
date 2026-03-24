@@ -224,6 +224,11 @@ div[data-testid="stDataFrame"] { border: 1px solid #E5E7EB; border-radius: 8px; 
     padding: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.04);
 }
 
+/* ── Chart tile header ───────────────────────────────────────────────────── */
+.chart-tile-header { padding: 4px 4px 8px 4px; }
+.chart-tile-title  { font-size: 0.92rem; font-weight: 700; color: #0F4C81; line-height: 1.3; }
+.chart-tile-subtitle { font-size: 0.78rem; color: #6B7280; margin-top: 2px; }
+
 /* ── Headings ────────────────────────────────────────────────────────────── */
 h1, h2, h3 { color: #0F4C81; }
 

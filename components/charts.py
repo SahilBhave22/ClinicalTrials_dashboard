@@ -408,6 +408,8 @@ def phase_bar(df: pd.DataFrame, x: str, y: str, title: str = "") -> go.Figure:
     )
     fig.update_yaxes(**_AXIS)
     _apply_category_axis(fig, df[x].tolist(), axis="x")
+    fig.update_xaxes(tickangle=-45, automargin=False, title_text="")
+    fig.update_layout(margin=dict(l=40, r=20, t=65, b=80))
     fig.update_traces(marker_line_width=0)
     return fig
 

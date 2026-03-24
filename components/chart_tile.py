@@ -4,39 +4,11 @@ Chart tile wrapper component.
 Renders a Plotly figure inside a styled tile with an optional header
 (title + subtitle). The tile border/shadow comes from the global CSS rule
 targeting [data-testid="stPlotlyChart"] in app.py.
+Chart tile header styles (.chart-tile-*) are also defined in app.py.
 """
 from __future__ import annotations
 import streamlit as st
 from plotly.graph_objects import Figure
-
-
-_TILE_CSS = """
-<style>
-.chart-tile-header {
-    padding: 4px 4px 8px 4px;
-}
-.chart-tile-title {
-    font-size: 0.92rem;
-    font-weight: 700;
-    color: #0F4C81;
-    line-height: 1.3;
-}
-.chart-tile-subtitle {
-    font-size: 0.78rem;
-    color: #6B7280;
-    margin-top: 2px;
-}
-</style>
-"""
-
-_CSS_INJECTED = False
-
-
-def _inject_css() -> None:
-    global _CSS_INJECTED
-    if not _CSS_INJECTED:
-        st.markdown(_TILE_CSS, unsafe_allow_html=True)
-        _CSS_INJECTED = True
 
 
 def chart_tile(
@@ -57,8 +29,6 @@ def chart_tile(
         subtitle: Optional muted sub-header.
         height:   Optional explicit pixel height passed to st.plotly_chart.
     """
-    _inject_css()
-
     if title:
         sub_html = (
             f'<div class="chart-tile-subtitle">{subtitle}</div>' if subtitle else ""
