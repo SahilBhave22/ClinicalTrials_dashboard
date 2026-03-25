@@ -15,7 +15,7 @@ from __future__ import annotations
 import streamlit as st
 import pandas as pd
 
-from data.db import query_aact, query_aact_uncached
+from data.db import query_aact, query_aact_ae, query_aact_uncached
 from data.query_builder import QueryBuilder
 from utils.filters import FilterState
 from config.settings import MAX_TABLE_ROWS
@@ -1531,18 +1531,121 @@ def get_groups_per_trial_dist(filters: FilterState) -> pd.DataFrame:
 #  SAFETY / ADVERSE EVENTS
 # ════════════════════════════════════════════════════════════════════════════
 
-@st.cache_data(ttl=300, show_spinner=False)
-def get_adverse_event_summary(filters: FilterState) -> dict:
-    """KPIs for the safety page."""
+@st.cache_data(ttl=900, show_spinner=False)
+def get_ae_aggregates(filters: FilterState) -> dict:
+    """
+    Single-query replacement for three separate calls:
+      get_adverse_event_summary  → result["kpis"]   (dict)
+      get_top_adverse_events     → result["top_ae"]  (DataFrame, top 25 by trial_count)
+      get_ae_by_organ_system     → result["organ"]   (DataFrame, top 50 by trial_count)
+
+    Uses one DB round-trip with a shared ae_filtered CTE so reported_events is
+    scanned only once per filter combination.
+    """
+    import json
+
+    _empty: dict = {
+        "kpis": {
+            "trials_with_ae": 0, "total_ae_records": 0,
+            "unique_ae_terms": 0, "unique_organ_systems": 0,
+            "total_subjects_affected": 0,
+        },
+        "top_ae": pd.DataFrame(),
+        "organ":  pd.DataFrame(),
+    }
+    if not filters.has_any_filter():
+        return _empty
+
     qb = QueryBuilder(filters)
-    scope_clause, params = qb.study_scope_clause("s")
-    scope_where = f"AND {scope_clause}" if scope_clause else ""
+    cte_sql, params = qb.ae_scope_cte()
+    scope_join = "JOIN scope_nct ON scope_nct.nct_id = re.nct_id" if cte_sql else ""
 
     sql = f"""
-        WITH ae_base AS (
+        {cte_sql}{"," if cte_sql else "WITH"} ae_filtered AS (
+            SELECT re.nct_id, re.adverse_event_term, re.organ_system,
+                   re.subjects_affected, re.event_count
+            FROM ctgov.reported_events re
+            {scope_join}
+            WHERE re.subjects_affected > 0
+              AND re.adverse_event_term IS NOT NULL
+        )
+        SELECT 'kpi' AS _rs, row_to_json(k.*)::text AS data
+        FROM (
+            SELECT
+                COUNT(DISTINCT nct_id)             AS trials_with_ae,
+                COUNT(*)                           AS total_ae_records,
+                COUNT(DISTINCT adverse_event_term) AS unique_ae_terms,
+                COUNT(DISTINCT organ_system)       AS unique_organ_systems,
+                SUM(subjects_affected)             AS total_subjects_affected
+            FROM ae_filtered
+        ) k
+        UNION ALL
+        SELECT 'top_terms', row_to_json(t.*)::text
+        FROM (
+            SELECT adverse_event_term, organ_system,
+                   COUNT(DISTINCT nct_id)  AS trial_count,
+                   SUM(subjects_affected)  AS total_affected,
+                   SUM(event_count)        AS total_events
+            FROM ae_filtered
+            GROUP BY 1, 2
+            ORDER BY 3 DESC, 4 DESC
+            LIMIT 25
+        ) t
+        UNION ALL
+        SELECT 'organ_systems', row_to_json(o.*)::text
+        FROM (
+            SELECT COALESCE(organ_system, 'Unknown') AS organ_system,
+                   COUNT(DISTINCT nct_id)            AS trial_count,
+                   COUNT(DISTINCT adverse_event_term) AS unique_terms,
+                   SUM(subjects_affected)             AS total_affected
+            FROM ae_filtered
+            GROUP BY 1
+            ORDER BY 2 DESC, 4 DESC
+            LIMIT 50
+        ) o
+    """
+    raw = query_aact_ae(sql, params)
+    if raw.empty:
+        return _empty
+
+    result: dict = dict(_empty)
+    for rs, group in raw.groupby("_rs"):
+        rows = [json.loads(r) for r in group["data"]]
+        if rs == "kpi":
+            r = rows[0] if rows else {}
+            result["kpis"] = {
+                "trials_with_ae":          int(r.get("trials_with_ae",          0) or 0),
+                "total_ae_records":        int(r.get("total_ae_records",         0) or 0),
+                "unique_ae_terms":         int(r.get("unique_ae_terms",          0) or 0),
+                "unique_organ_systems":    int(r.get("unique_organ_systems",     0) or 0),
+                "total_subjects_affected": int(r.get("total_subjects_affected",  0) or 0),
+            }
+        elif rs == "top_terms":
+            result["top_ae"] = pd.DataFrame(rows)
+        elif rs == "organ_systems":
+            result["organ"] = pd.DataFrame(rows)
+    return result
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def get_adverse_event_summary(filters: FilterState) -> dict:
+    """KPIs for the safety page."""
+    if not filters.has_any_filter():
+        return {
+            "trials_with_ae": 0, "total_ae_records": 0,
+            "unique_ae_terms": 0, "unique_organ_systems": 0,
+            "total_subjects_affected": 0,
+        }
+    qb = QueryBuilder(filters)
+    cte_sql, params = qb.ae_scope_cte()
+    scope_join = "JOIN scope_nct ON scope_nct.nct_id = re.nct_id" if cte_sql else ""
+
+    sql = f"""
+        {cte_sql}{"," if cte_sql else "WITH"} ae_base AS (
             SELECT re.nct_id, re.adverse_event_term, re.organ_system,
                    re.subjects_affected, re.subjects_at_risk, re.event_count
             FROM ctgov.reported_events re
+            {scope_join}
             WHERE re.subjects_affected > 0
               AND re.adverse_event_term IS NOT NULL
         )
@@ -1553,10 +1656,8 @@ def get_adverse_event_summary(filters: FilterState) -> dict:
             COUNT(DISTINCT re.organ_system)       AS unique_organ_systems,
             SUM(re.subjects_affected)             AS total_subjects_affected
         FROM ae_base re
-        JOIN ctgov.studies s ON s.nct_id = re.nct_id
-        WHERE TRUE {scope_where}
     """
-    df = query_aact(sql, params)
+    df = query_aact_ae(sql, params)
     row = df.iloc[0] if not df.empty else {}
     return {
         "trials_with_ae":        int(row.get("trials_with_ae",          0) or 0),
@@ -1567,12 +1668,15 @@ def get_adverse_event_summary(filters: FilterState) -> dict:
     }
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=900, show_spinner=False)
 def get_top_adverse_events(filters: FilterState, limit: int = 25) -> pd.DataFrame:
+    if not filters.has_any_filter():
+        return pd.DataFrame()
     qb = QueryBuilder(filters)
-    scope_clause, params = qb.study_scope_clause("s")
-    scope_where = f"AND {scope_clause}" if scope_clause else ""
+    cte_sql, params = qb.ae_scope_cte()
+    scope_join = "JOIN scope_nct ON scope_nct.nct_id = re.nct_id" if cte_sql else ""
     sql = f"""
+        {cte_sql}
         SELECT
             re.adverse_event_term,
             re.organ_system,
@@ -1580,59 +1684,64 @@ def get_top_adverse_events(filters: FilterState, limit: int = 25) -> pd.DataFram
             SUM(re.subjects_affected)  AS total_affected,
             SUM(re.event_count)        AS total_events
         FROM ctgov.reported_events re
-        JOIN ctgov.studies s ON s.nct_id = re.nct_id
+        {scope_join}
         WHERE re.subjects_affected > 0
           AND re.adverse_event_term IS NOT NULL
-          {scope_where}
         GROUP BY 1, 2
         ORDER BY 3 DESC, 4 DESC
         LIMIT {limit}
     """
-    return query_aact(sql, params)
+    return query_aact_ae(sql, params)
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=900, show_spinner=False)
 def get_ae_by_organ_system(filters: FilterState) -> pd.DataFrame:
+    if not filters.has_any_filter():
+        return pd.DataFrame()
     qb = QueryBuilder(filters)
-    scope_clause, params = qb.study_scope_clause("s")
-    scope_where = f"AND {scope_clause}" if scope_clause else ""
+    cte_sql, params = qb.ae_scope_cte()
+    scope_join = "JOIN scope_nct ON scope_nct.nct_id = re.nct_id" if cte_sql else ""
     sql = f"""
+        {cte_sql}
         SELECT
             COALESCE(re.organ_system,'Unknown') AS organ_system,
             COUNT(DISTINCT re.nct_id)           AS trial_count,
             COUNT(DISTINCT re.adverse_event_term) AS unique_terms,
             SUM(re.subjects_affected)            AS total_affected
         FROM ctgov.reported_events re
-        JOIN ctgov.studies s ON s.nct_id = re.nct_id
-        WHERE re.subjects_affected > 0 {scope_where}
+        {scope_join}
+        WHERE re.subjects_affected > 0
         GROUP BY 1 ORDER BY 2 DESC, 4 DESC
+        LIMIT 50
     """
-    return query_aact(sql, params)
+    return query_aact_ae(sql, params)
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=900, show_spinner=False)
 def get_ae_by_drug(filters: FilterState, limit: int = 20) -> pd.DataFrame:
     """Adverse events per drug, using drug_result_groups to link drug → result group."""
+    if not filters.has_any_filter():
+        return pd.DataFrame()
     qb = QueryBuilder(filters)
-    scope_clause, params = qb.study_scope_clause("s")
-    scope_where = f"AND {scope_clause}" if scope_clause else ""
+    cte_sql, params = qb.ae_scope_cte()
+    scope_join = "JOIN scope_nct ON scope_nct.nct_id = re.nct_id" if cte_sql else ""
     sql = f"""
+        {cte_sql}
         SELECT
             drg.brand_name,
             COUNT(DISTINCT re.nct_id)             AS trial_count,
             COUNT(DISTINCT re.adverse_event_term) AS unique_terms,
             SUM(re.subjects_affected)             AS total_affected
         FROM ctgov.reported_events re
+        {scope_join}
         JOIN public.drug_result_groups drg
                ON drg.nct_id = re.nct_id
                AND drg.result_group_id::text = re.result_group_id::text
-        JOIN ctgov.studies s ON s.nct_id = re.nct_id
         WHERE re.subjects_affected > 0
           AND drg.brand_name IS NOT NULL
-          {scope_where}
         GROUP BY 1 ORDER BY 2 DESC LIMIT {limit}
     """
-    return query_aact(sql, params)
+    return query_aact_ae(sql, params)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -1641,10 +1750,12 @@ def get_ae_detail_table(filters: FilterState,
                          ae_term: str | None = None,
                          limit: int = MAX_TABLE_ROWS) -> pd.DataFrame:
     """Full adverse event detail table with drug linkage."""
+    if not filters.has_any_filter():
+        return pd.DataFrame()
     qb = QueryBuilder(filters)
-    scope_clause, scope_p = qb.study_scope_clause("s")
-    scope_where = f"AND {scope_clause}" if scope_clause else ""
-    params = dict(scope_p)
+    cte_sql, params = qb.ae_scope_cte()
+    params = dict(params)
+    scope_join = "JOIN scope_nct ON scope_nct.nct_id = re.nct_id" if cte_sql else ""
 
     extra = ""
     if organ_system:
@@ -1655,6 +1766,7 @@ def get_ae_detail_table(filters: FilterState,
         params["ae_term"] = ae_term
 
     sql = f"""
+        {cte_sql}
         SELECT
             re.nct_id,
             re.adverse_event_term,
@@ -1667,6 +1779,7 @@ def get_ae_detail_table(filters: FilterState,
             s.phase,
             s.overall_status
         FROM ctgov.reported_events re
+        {scope_join}
         JOIN ctgov.studies s ON s.nct_id = re.nct_id
         LEFT JOIN public.drug_result_groups drg
                ON drg.nct_id = re.nct_id
@@ -1675,11 +1788,11 @@ def get_ae_detail_table(filters: FilterState,
                ON sp.nct_id = s.nct_id AND sp.lead_or_collaborator = 'lead'
         WHERE re.subjects_affected > 0
           AND re.adverse_event_term IS NOT NULL
-          {scope_where} {extra}
+          {extra}
         ORDER BY re.subjects_affected DESC
         LIMIT {limit}
     """
-    return query_aact(sql, params)
+    return query_aact_ae(sql, params)
 
 
 # ════════════════════════════════════════════════════════════════════════════

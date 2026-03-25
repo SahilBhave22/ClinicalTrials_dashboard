@@ -10,7 +10,7 @@ from components.metric_cards import kpi_row
 from components.filter_summary import filter_summary_bar
 from components.charts import bar_chart, stacked_bar, donut_chart, funnel_chart
 from components.chart_tile import chart_tile
-from components.alerts import no_data_callout
+from components.alerts import no_data_callout, filter_required_callout
 from components.tables import ag_table, csv_download_button
 from utils.filters import FilterState
 from services.pro_analysis import (
@@ -36,14 +36,12 @@ def render(filters: FilterState) -> None:
     )
     filter_summary_bar(filters)
 
-    with st.spinner("Loading PRO data…"):
-        raw_df     = get_pro_usage(filters)
-        sp_df      = get_pro_by_sponsor(filters, limit=15)
-        phase_df   = get_pro_by_phase(filters)
-        funnel_df  = get_reported_pro_funnel(filters)
+    with st.spinner("Loading PRO data..."):
+        raw_df = get_pro_usage(filters)
+        funnel_df = get_reported_pro_funnel(filters)
 
-    agg_df  = aggregate_pro_usage(raw_df)
-    top_df  = top_instruments(agg_df, n=15)
+    agg_df = aggregate_pro_usage(raw_df)
+    top_df = top_instruments(agg_df, n=15)
     pivot_df = planned_vs_reported_pivot(raw_df)
 
     # ── KPIs ──────────────────────────────────────────────────────────────────
@@ -63,6 +61,17 @@ def render(filters: FilterState) -> None:
         {"label": "Trials with Reported PRO","value": reported_n,   "icon": "✅"},
     ])
     st.markdown("<br>", unsafe_allow_html=True)
+
+    if not filters.has_any_filter():
+        filter_required_callout(
+            "Please select at least one filter in the sidebar "
+            "(indication, drug class, sponsor, phase, etc.) to view the charts."
+        )
+        return
+
+    with st.spinner("Loading charts..."):
+        sp_df = get_pro_by_sponsor(filters, limit=15)
+        phase_df = get_pro_by_phase(filters)
 
     tab1, tab2, tab3, tab4 = st.tabs([
         "📊 Instrument Frequency", "📋 Planned vs Reported",

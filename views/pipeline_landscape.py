@@ -12,7 +12,7 @@ from components.charts import (
     bar_chart, treemap_chart, donut_chart, heatmap_chart,
 )
 from components.chart_tile import chart_tile
-from components.alerts import no_data_callout, pipeline_data_note
+from components.alerts import no_data_callout, pipeline_data_note, filter_required_callout
 from components.tables import ag_table, csv_download_button
 from utils.filters import FilterState
 from services.pipeline_analysis import sponsor_indication_pivot
@@ -41,12 +41,8 @@ def render(filters: FilterState) -> None:
     ind = filters.indication_name
     sponsors = tuple(filters.sponsor)
 
-    with st.spinner("Loading pipeline data…"):
-        kpis    = get_pipeline_kpis(ind, sponsors)
-        sp_df   = get_pipeline_by_sponsor(ind, sponsors, limit=20)
-        ind_df  = get_pipeline_by_indication(ind, sponsors, limit=25)
-        intv_df = get_pipeline_top_interventions(ind, sponsors, limit=25)
-        pro_df  = get_pipeline_pro_usage(ind, sponsors, limit=20)
+    with st.spinner("Loading pipeline data..."):
+        kpis = get_pipeline_kpis(ind, sponsors)
 
     # ── KPIs ──────────────────────────────────────────────────────────────────
     kpi_row([
@@ -57,6 +53,19 @@ def render(filters: FilterState) -> None:
         {"label": "With Planned PROs",       "value": kpis["with_pros"],          "icon": "👤"},
     ])
     st.markdown("<br>", unsafe_allow_html=True)
+
+    if not filters.has_any_filter():
+        filter_required_callout(
+            "Please select at least one filter in the sidebar "
+            "(indication, drug class, sponsor, phase, etc.) to view the charts."
+        )
+        return
+
+    with st.spinner("Loading charts..."):
+        sp_df   = get_pipeline_by_sponsor(ind, sponsors, limit=20)
+        ind_df  = get_pipeline_by_indication(ind, sponsors, limit=25)
+        intv_df = get_pipeline_top_interventions(ind, sponsors, limit=25)
+        pro_df  = get_pipeline_pro_usage(ind, sponsors, limit=20)
 
     # ── Tabs ──────────────────────────────────────────────────────────────────
     tab1, tab2, tab3, tab4, tab5 = st.tabs([

@@ -331,35 +331,13 @@ from components.filters import render_sidebar
 filters = render_sidebar()
 
 # ── Tab navigation + routing ──────────────────────────────────────────────────
-FILTER_REQUIRED = {
-    "views.outcome_scores",
-    "views.safety_analysis",
-    "views.trial_groups",
-}
-
 tabs = st.tabs([label for label, _ in PAGE_MAP])
 
 for tab, (_, module_path) in zip(tabs, PAGE_MAP):
     with tab:
-        if module_path in FILTER_REQUIRED and not filters.has_any_filter():
-            st.markdown(
-                """
-                <div style="text-align:center;padding:60px 20px;">
-                  <div style="font-size:48px;margin-bottom:16px;">🔍</div>
-                  <h3 style="color:#0F4C81;font-weight:700;">Filter Required</h3>
-                  <p style="color:#6B7280;font-size:15px;max-width:420px;margin:0 auto;">
-                    Please select at least one filter in the sidebar
-                    (indication, drug class, sponsor, phase, etc.)
-                    to load this tab.
-                  </p>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-        else:
-            try:
-                module = importlib.import_module(module_path)
-                module.render(filters)
-            except Exception as e:
-                st.error(f"Error loading {module_path}: {e}")
-                st.exception(e)
+        try:
+            module = importlib.import_module(module_path)
+            module.render(filters)
+        except Exception as e:
+            st.error(f"Error loading {module_path}: {e}")
+            st.exception(e)

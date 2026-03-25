@@ -169,7 +169,7 @@ def filter_summary_bar(filters: FilterState) -> None:
         st.markdown(
             '<div class="fbar">'
             '  <div class="fbar-header">🔍&nbsp;Filters</div>'
-            '  <span class="fbar-empty">No filters active &mdash; showing all available data</span>'
+            '  <span class="fbar-empty">No filters active</span>'
             '</div>',
             unsafe_allow_html=True,
         )

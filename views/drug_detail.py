@@ -12,7 +12,7 @@ from components.charts import (
     bar_chart, heatmap_chart,
 )
 from components.chart_tile import chart_tile
-from components.alerts import no_data_callout
+from components.alerts import no_data_callout, filter_required_callout
 from components.tables import ag_table, csv_download_button
 from utils.filters import FilterState
 from data.repository import (
@@ -58,6 +58,13 @@ def render(filters: FilterState) -> None:
         {"label": "Drug Classes",  "value": len(classes_df),             "icon": "🏷️"},
     ])
     st.markdown("<br>", unsafe_allow_html=True)
+
+    if not filters.has_any_filter():
+        filter_required_callout(
+            "Please select at least one filter in the sidebar "
+            "(indication, drug class, sponsor, phase, etc.) to view the charts."
+        )
+        return
 
     # ── Tabs ──────────────────────────────────────────────────────────────────
     tab1, tab2, tab3, tab4 = st.tabs(

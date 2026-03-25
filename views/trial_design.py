@@ -9,7 +9,7 @@ from components.page_header import page_header
 from components.filter_summary import filter_summary_bar
 from components.charts import bar_chart, donut_chart, grouped_bar
 from components.chart_tile import chart_tile
-from components.alerts import no_data_callout
+from components.alerts import no_data_callout, filter_required_callout
 from components.tables import csv_download_button
 from utils.filters import FilterState
 from services.trial_design_analysis import (
@@ -32,6 +32,13 @@ def render(filters: FilterState) -> None:
         breadcrumb="Home > Trial Design",
     )
     filter_summary_bar(filters)
+
+    if not filters.has_any_filter():
+        filter_required_callout(
+            "Please select at least one filter in the sidebar "
+            "(indication, drug class, sponsor, phase, etc.) to view the charts."
+        )
+        return
 
     with st.spinner("Loading trial design data…"):
         design_df  = get_trial_design_metrics(filters)

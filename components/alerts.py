@@ -44,6 +44,21 @@ def no_data_callout(context: str = "current filters") -> None:
     )
 
 
+def filter_required_callout(message: str = "Please select at least one filter to view this page.") -> None:
+    st.markdown(
+        f"""
+        <div style="text-align:center;padding:60px 20px;">
+          <div style="font-size:48px;margin-bottom:16px;">🔎</div>
+          <h3 style="color:#0F4C81;font-weight:700;">Filter Required</h3>
+          <p style="color:#6B7280;font-size:15px;max-width:420px;margin:0 auto;">
+            {message}
+          </p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def pipeline_data_note() -> None:
     info_callout(
         "Pipeline data is sourced from onco_pipeline_trials and reflects "

@@ -13,7 +13,7 @@ from components.charts import (
     phase_bar, area_chart, bar_chart, donut_chart,
 )
 from components.chart_tile import chart_tile
-from components.alerts import no_data_callout
+from components.alerts import no_data_callout, filter_required_callout
 from utils.filters import FilterState
 from utils.formatting import fmt_number, fmt_median
 from data.repository import (
@@ -75,53 +75,58 @@ def render(filters: FilterState) -> None:
     ])
     st.markdown("<br>", unsafe_allow_html=True)
 
-    with st.spinner("Loading charts…"):
-        # ── Charts Row 1 ─────────────────────────────────────────────────────────
-        col1, col2 = st.columns(2)
+    if not filters.has_any_filter():
+        filter_required_callout(
+            "Please select at least one filter in the sidebar "
+            "(indication, drug class, sponsor, phase, etc.) to view the charts."
+        )
+    else:
+        with st.spinner("Loading charts..."):
+            # Charts Row 1
+            col1, col2 = st.columns(2)
 
-        with col1:
-            phase_df = get_trials_by_phase(filters)
-            if phase_df.empty:
-                no_data_callout("phase distribution")
+            with col1:
+                phase_df = get_trials_by_phase(filters)
+                if phase_df.empty:
+                    no_data_callout("phase distribution")
+                else:
+                    chart_tile(phase_bar(phase_df, x="phase", y="trial_count",
+                                         title="Trial Count by Phase"))
+
+            with col2:
+                time_df = get_trials_over_time(filters)
+                if time_df.empty:
+                    no_data_callout("trial timeline")
+                else:
+                    time_df["year"] = pd.to_datetime(time_df["year"]).dt.year
+                    chart_tile(area_chart(time_df, x="year", y="trial_count",
+                                          title="Trials First Posted per Year"))
+
+            # Charts Row 2
+            col3, col4 = st.columns(2)
+
+            with col3:
+                sp_df = get_top_sponsors(filters, limit=15)
+                if sp_df.empty:
+                    no_data_callout("sponsors")
+                else:
+                    chart_tile(bar_chart(sp_df.head(12), x="sponsor", y="trial_count",
+                                         orientation="h", title="Top Sponsors by Trial Count"))
+
+            with col4:
+                cond_df = get_top_conditions(filters, limit=15)
+                if cond_df.empty:
+                    no_data_callout("conditions")
+                else:
+                    chart_tile(bar_chart(cond_df.head(12), x="condition", y="trial_count",
+                                         orientation="h", title="Top MeSH Conditions"))
+
+            intv_df = get_top_interventions(filters, limit=20)
+            if not intv_df.empty:
+                chart_tile(bar_chart(intv_df.head(15), x="intervention", y="trial_count",
+                                     orientation="h", title="Top Drug Interventions by Trial Count"))
             else:
-                chart_tile(phase_bar(phase_df, x="phase", y="trial_count",
-                                     title="Trial Count by Phase"))
-
-        with col2:
-            time_df = get_trials_over_time(filters)
-            if time_df.empty:
-                no_data_callout("trial timeline")
-            else:
-                time_df["year"] = pd.to_datetime(time_df["year"]).dt.year
-                chart_tile(area_chart(time_df, x="year", y="trial_count",
-                                      title="Trials First Posted per Year"))
-
-        # ── Charts Row 2 ─────────────────────────────────────────────────────────
-        col3, col4 = st.columns(2)
-
-        with col3:
-            sp_df = get_top_sponsors(filters, limit=15)
-            if sp_df.empty:
-                no_data_callout("sponsors")
-            else:
-                chart_tile(bar_chart(sp_df.head(12), x="sponsor", y="trial_count",
-                                     orientation="h", title="Top Sponsors by Trial Count"))
-
-        with col4:
-            cond_df = get_top_conditions(filters, limit=15)
-            if cond_df.empty:
-                no_data_callout("conditions")
-            else:
-                chart_tile(bar_chart(cond_df.head(12), x="condition", y="trial_count",
-                                     orientation="h", title="Top MeSH Conditions"))
-
-        # ── Top Interventions ─────────────────────────────────────────────────────
-        intv_df = get_top_interventions(filters, limit=20)
-        if not intv_df.empty:
-            chart_tile(bar_chart(intv_df.head(15), x="intervention", y="trial_count",
-                                 orientation="h", title="Top Drug Interventions by Trial Count"))
-        else:
-            no_data_callout("interventions")
+                no_data_callout("interventions")
 
     # ── Navigation Cards ──────────────────────────────────────────────────────
     st.markdown("<hr style='margin:28px 0 16px 0;border-color:#E5E7EB;'>",

@@ -56,8 +56,8 @@ def get_engine(db_key: str) -> sqlalchemy.Engine:
         pool_timeout=30
     )
 
-def exec_sql(sql: str, db_key: str, params: dict | None = None) -> pd.DataFrame:
+def exec_sql(sql: str, db_key: str, params: dict | None = None, timeout_s: int = 120) -> pd.DataFrame:
     eng = get_engine(db_key)
     with eng.connect() as conn:
-        conn.execute(text("SET statement_timeout = '120s'"))
+        conn.execute(text(f"SET statement_timeout = '{int(timeout_s)}s'"))
         return pd.read_sql(text(sql), conn, params=params)

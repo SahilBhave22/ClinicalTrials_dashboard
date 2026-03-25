@@ -487,6 +487,130 @@ class QueryBuilder:
 
         return QueryBuilder.combine(parts), params
 
+    # ── AE-specific CTE scope ─────────────────────────────────────────────────
+
+    def ae_scope_cte(self) -> tuple[str, dict]:
+        """
+        Build a ``WITH scope_nct AS (...)`` CTE that computes the valid nct_id
+        set for adverse-event queries using a single JOIN-based pass rather than
+        chaining 10 nested IN subqueries.
+
+        Returns:
+            cte_sql : the full ``WITH scope_nct AS (...)`` SQL string.
+                      Empty string when no filters are active (caller should
+                      skip the JOIN too).
+            params  : bind-parameter dict for use with the CTE.
+
+        Usage in a query::
+
+            cte_sql, params = qb.ae_scope_cte()
+            scope_join = "JOIN scope_nct ON scope_nct.nct_id = re.nct_id" if cte_sql else ""
+            sql = f"{cte_sql} SELECT ... FROM ctgov.reported_events re {scope_join} ..."
+        """
+        params: dict = {}
+        where_parts: list[str] = []
+        join_parts: list[str] = []
+
+        # ── Global scope: drug_trials (limits to known drug trials) ───────────
+        indication = self.filters.indication_name
+        brand_names = self.brand_names
+
+        # ATC class set but resolved to zero brands → empty result set
+        if self.filters.atc_class_name and not brand_names:
+            return "WITH scope_nct AS (SELECT nct_id FROM ctgov.studies WHERE FALSE)", {}
+
+        # ATC → brand filter on drug_trials
+        if brand_names:
+            bn_frag = _list_clause("dt.brand_name", brand_names, params, "bn")
+            where_parts.append(bn_frag)
+
+        # Indication → browse_conditions JOIN
+        if indication:
+            join_parts.append(
+                f"JOIN {BROWSE_CONDITIONS_TABLE} bc ON bc.nct_id = dt.nct_id"
+            )
+            where_parts.append(
+                f"bc.{BROWSE_CONDITIONS_MESH_TYPE} = '{BROWSE_CONDITIONS_MESH_LIST}'"
+            )
+            where_parts.append(f"bc.{BROWSE_CONDITIONS_MESH_TERM} = :bc_indication")
+            params["bc_indication"] = indication
+
+        # Direct brand-name sidebar filter (further narrows drug_trials)
+        if self.filters.brand_name:
+            dbn_frag = _list_clause("dt.brand_name", self.filters.brand_name, params, "dbn")
+            where_parts.append(dbn_frag)
+
+        # Drug indication sidebar filter → resolves to additional brand restriction
+        if self.filters.drug_indication:
+            di_brands = resolve_brand_names_from_drug_indication(self.filters.drug_indication)
+            if not di_brands:
+                return "WITH scope_nct AS (SELECT nct_id FROM ctgov.studies WHERE FALSE)", {}
+            di_frag = _list_clause("dt.brand_name", di_brands, params, "di")
+            where_parts.append(di_frag)
+
+        # ── Study-level filters (on ctgov.studies alias s) ────────────────────
+        if self.filters.study_type:
+            sty_frag = _list_clause("s.study_type", self.filters.study_type, params, "sty")
+            where_parts.append(sty_frag)
+
+        if self.filters.phase:
+            ph_frag = _list_clause("s.phase", self.filters.phase, params, "ph")
+            where_parts.append(ph_frag)
+
+        if self.filters.overall_status:
+            os_frag = _list_clause("s.overall_status", self.filters.overall_status, params, "os")
+            where_parts.append(os_frag)
+
+        if self.filters.enrollment_min is not None:
+            where_parts.append("s.enrollment >= :enr_min")
+            params["enr_min"] = self.filters.enrollment_min
+        if self.filters.enrollment_max is not None:
+            where_parts.append("s.enrollment <= :enr_max")
+            params["enr_max"] = self.filters.enrollment_max
+
+        if self.filters.has_results is True:
+            where_parts.append("s.results_first_submitted_date IS NOT NULL")
+        elif self.filters.has_results is False:
+            where_parts.append("s.results_first_submitted_date IS NULL")
+
+        # ── Sponsor filters (single JOIN covering both name + agency_class) ───
+        if self.filters.sponsor or self.filters.sponsor_agency_class:
+            join_parts.append(
+                "JOIN ctgov.sponsors sp ON sp.nct_id = s.nct_id"
+                " AND sp.lead_or_collaborator = 'lead'"
+            )
+            if self.filters.sponsor:
+                sp_frag = _list_clause("sp.name", self.filters.sponsor, params, "sph")
+                where_parts.append(sp_frag)
+            if self.filters.sponsor_agency_class:
+                sac_frag = _list_clause(
+                    "sp.agency_class", self.filters.sponsor_agency_class, params, "sac"
+                )
+                where_parts.append(sac_frag)
+
+        # ── Country filter ────────────────────────────────────────────────────
+        if self.filters.country:
+            join_parts.append(
+                "JOIN ctgov.countries c ON c.nct_id = s.nct_id"
+                " AND c.removed IS NOT TRUE"
+            )
+            co_frag = _list_clause("c.name", self.filters.country, params, "coh")
+            where_parts.append(co_frag)
+
+        joins_sql = "\n        ".join(join_parts)
+        where_sql = (
+            "WHERE " + "\n          AND ".join(where_parts) if where_parts else ""
+        )
+
+        cte_sql = f"""WITH scope_nct AS (
+        SELECT DISTINCT s.nct_id
+        FROM ctgov.studies s
+        JOIN public.drug_trials dt ON dt.nct_id = s.nct_id
+        {joins_sql}
+        {where_sql}
+    )"""
+        return cte_sql, params
+
     # ── Utility: combine clauses ──────────────────────────────────────────────
 
     @staticmethod

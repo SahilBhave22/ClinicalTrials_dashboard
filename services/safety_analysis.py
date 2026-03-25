@@ -42,8 +42,7 @@ def add_incidence_column(df: pd.DataFrame) -> pd.DataFrame:
         return df
     if "subjects_affected" in df.columns and "subjects_at_risk" in df.columns:
         df = df.copy()
-        df["incidence_pct"] = df.apply(
-            lambda r: incidence_rate(r["subjects_affected"], r["subjects_at_risk"]),
-            axis=1,
-        )
+        at_risk = pd.to_numeric(df["subjects_at_risk"], errors="coerce").replace(0, pd.NA)
+        affected = pd.to_numeric(df["subjects_affected"], errors="coerce")
+        df["incidence_pct"] = (affected / at_risk * 100).round(2)
     return df

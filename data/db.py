@@ -33,6 +33,16 @@ def query_drugs(sql: str, params: dict | None = None) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+@st.cache_data(ttl=900, show_spinner=False)
+def query_aact_ae(sql: str, params: dict | None = None) -> pd.DataFrame:
+    """AE-specific query runner with extended 300s statement timeout and longer cache."""
+    try:
+        return exec_sql(sql, DB_AACT, params, timeout_s=300)
+    except Exception as e:
+        st.error(f"AACT AE query error: {e}")
+        return pd.DataFrame()
+
+
 def query_aact_uncached(sql: str, params: dict | None = None) -> pd.DataFrame:
     """Execute without cache – used for NL queries and one-off fetches."""
     try:

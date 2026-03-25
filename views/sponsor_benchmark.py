@@ -11,7 +11,7 @@ from components.charts import (
     bar_chart, stacked_bar, grouped_bar, heatmap_chart,
 )
 from components.chart_tile import chart_tile
-from components.alerts import no_data_callout
+from components.alerts import no_data_callout, filter_required_callout
 from components.tables import ag_table, csv_download_button
 from utils.filters import FilterState
 from services.analytics import pivot_heatmap
@@ -31,6 +31,13 @@ def render(filters: FilterState) -> None:
         breadcrumb="Home > Sponsor Benchmark",
     )
     filter_summary_bar(filters)
+
+    if not filters.has_any_filter():
+        filter_required_callout(
+            "Please select at least one filter in the sidebar "
+            "(indication, drug class, sponsor, phase, etc.) to view the charts."
+        )
+        return
 
     tab1, tab2, tab3, tab4 = st.tabs([
         "📊 Trial Counts", "📐 Phase Mix", "👤 PRO Adoption", "🎯 Endpoint Usage"
