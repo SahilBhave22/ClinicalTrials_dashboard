@@ -7,15 +7,15 @@ import streamlit as st
 
 from components.page_header import page_header
 from components.filter_summary import filter_summary_bar
-from components.charts import bar_chart, donut_chart, stacked_bar
+from components.charts import bar_chart, funnel_chart, heatmap_chart
 from components.chart_tile import chart_tile
 from components.alerts import no_data_callout, filter_required_callout
 from components.tables import ag_table, csv_download_button
 from utils.filters import FilterState
 from data.repository import (
-    get_design_outcome_type_dist,
+    get_design_outcome_type_category_heatmap,
     get_top_design_endpoints,
-    get_planned_pro_usage,
+    get_reported_pro_funnel,
     get_design_outcomes,
 )
 
@@ -37,48 +37,47 @@ def render(filters: FilterState) -> None:
         return
 
     with st.spinner("Loading endpoint data…"):
-        type_df   = get_design_outcome_type_dist(filters)
-        top_ep_df = get_top_design_endpoints(filters, limit=25)
-        pro_df    = get_planned_pro_usage(filters)
+        heatmap_df = get_design_outcome_type_category_heatmap(filters)
+        top_ep_df  = get_top_design_endpoints(filters, limit=10)
+        funnel_df  = get_reported_pro_funnel(filters)
 
     tab1, tab2, tab3, tab4 = st.tabs([
         "📊 Outcome Types", "🔢 Top Endpoints", "👤 Planned PROs", "📄 Full Table"
     ])
 
     with tab1:
-        if type_df.empty:
+        if heatmap_df.empty:
             no_data_callout("outcome type distribution")
         else:
-            c1, c2 = st.columns(2)
-            with c1:
-                chart_tile(donut_chart(type_df, "outcome_type", "endpoint_count",
-                                       title="Endpoints by Type"))
-            with c2:
-                chart_tile(bar_chart(type_df, "outcome_type", "trial_count",
-                                     title="Trials with Each Outcome Type"))
+            chart_tile(heatmap_chart(
+                heatmap_df,
+                title="Outcome Type × Category (Unique Trials)",
+                x_label="Outcome Category",
+                y_label="Outcome Type",
+            ))
 
     with tab2:
         if top_ep_df.empty:
             no_data_callout("endpoints")
         else:
-            chart_tile(bar_chart(top_ep_df.head(20), "outcome_category", "trial_count",
-                                 orientation="h", title="Top 20 Planned Endpoint Categories by Frequency"))
+            chart_tile(bar_chart(top_ep_df.head(10), "outcome_category", "trial_count",
+                                 orientation="h", title="Top 10 Planned Endpoint Categories by Frequency"))
             csv_download_button(top_ep_df, "top_endpoints.csv")
 
     with tab3:
-        if pro_df.empty:
-            no_data_callout("planned PROs")
+        if not funnel_df.empty:
+            stage_order = {"Planned PROs": 0, "Reported PROs": 1}
+            funnel_sorted = funnel_df.sort_values(
+                "stage", key=lambda s: s.map(stage_order)
+            ).reset_index(drop=True)
+            chart_tile(funnel_chart(funnel_sorted, y="stage", x="trial_count",
+                                    title="Planned vs Reported PRO Funnel"))
+            c1, c2 = st.columns(2)
+            for _, row in funnel_sorted.iterrows():
+                with (c1 if row["stage"] == "Planned PROs" else c2):
+                    st.metric(row["stage"], int(row["trial_count"]))
         else:
-            pro_agg = (
-                pro_df.groupby("instrument_name")["trial_count"]
-                .sum().reset_index()
-                .sort_values("trial_count", ascending=False)
-            )
-            chart_tile(bar_chart(pro_agg, "instrument_name", "trial_count",
-                                 orientation="h", title="Planned PRO Instruments"))
-            st.markdown("##### PRO Instrument Usage by Phase")
-            chart_tile(stacked_bar(pro_df, "instrument_name", "trial_count", "phase",
-                                   title="PRO Instruments by Phase"))
+            no_data_callout("PRO funnel")
 
     with tab4:
         full_df = get_design_outcomes(filters)

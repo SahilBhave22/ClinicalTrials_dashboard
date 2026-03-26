@@ -122,7 +122,8 @@ def render(filters: FilterState) -> None:
                 pivot = pivot_heatmap(sp_heat, "sponsor", "instrument_name", "trial_count")
                 if not pivot.empty:
                     chart_tile(heatmap_chart(pivot, title="Sponsor × Instrument Heatmap",
-                                             x_label="Instrument", y_label="Sponsor"))
+                                             x_label="Instrument", y_label="Sponsor",
+                                             tickangle=-90, height=380))
 
     with tab4:
         if phase_df.empty:

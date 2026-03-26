@@ -7,6 +7,7 @@ targeting [data-testid="stPlotlyChart"] in app.py.
 Chart tile header styles (.chart-tile-*) are also defined in app.py.
 """
 from __future__ import annotations
+import uuid
 import streamlit as st
 from plotly.graph_objects import Figure
 
@@ -41,7 +42,7 @@ def chart_tile(
             unsafe_allow_html=True,
         )
 
-    kwargs: dict = {"use_container_width": True}
+    kwargs: dict = {"use_container_width": True, "key": f"chart_{uuid.uuid4().hex}"}
     if height:
         kwargs["height"] = height
     st.plotly_chart(fig, **kwargs)

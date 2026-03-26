@@ -167,17 +167,27 @@ def _apply_filters(extracted: dict) -> None:
     """
     fs = get_filters()
 
-    # 1. Apply indication (global filter) — resolve to exact DB casing first
+    # 1. Apply indication (global filter) — resolve to exact DB casing first.
+    #    Always initialise `resolved` so it is defined for the session_state
+    #    assignment below, regardless of whether extraction succeeded.
+    resolved = None
     if extracted.get("indication"):
         resolved = _resolve_indication(extracted["indication"])
         if resolved:
             fs.indication_name = resolved
 
-    # 2. Clear ALL widget keys so the sidebar re-reads from FilterState on next rerun.
-    #    Streamlit forbids setting a widget's session_state key after it has been
-    #    instantiated in the same run — popping is the safe alternative.
-    for key in ("sb_indication", "sb_atc",
-                "ms_phase", "ms_status", "ms_sponsor", "ms_agency_class",
+    # 2. Sync global filter widget keys via direct assignment.
+    #    Popping these keys is unreliable: Streamlit may fall back to the
+    #    browser's cached frontend value rather than the `index` parameter,
+    #    causing render_sidebar() to overwrite fs.indication_name back to None
+    #    on the very next rerun.  Direct assignment is safe, is respected on
+    #    the next render, and does NOT trigger the on_change callback.
+    st.session_state["sb_indication"] = resolved or ""
+    st.session_state["sb_atc"]        = extracted.get("atc_class") or ""
+
+    # Pop downstream widget keys so sidebar re-reads from FilterState (default=)
+    # on next rerun rather than returning stale session_state values.
+    for key in ("ms_phase", "ms_status", "ms_sponsor", "ms_agency_class",
                 "ms_brand", "ms_drug_ind", "ms_epcat", "ms_pro_inst",
                 "ms_pro_dom", "ms_country", "ms_study_type"):
         st.session_state.pop(key, None)

@@ -177,6 +177,17 @@ def _on_global_filter_change() -> None:
     fs._resolved_brand_names = []
     set_filters(fs)
 
+    # Pop downstream widget session_state keys so that multiselects fall back
+    # to their default= parameter (which will be [] since FilterState was just
+    # cleared).  Without this, the multiselects read their cached session_state
+    # values on the next render and silently re-populate FilterState, making
+    # the cascade reset ineffective.
+    for key in ("ms_study_type", "ms_phase", "ms_status", "ms_sponsor",
+                "ms_agency_class", "ms_brand", "ms_drug_ind",
+                "ms_epcat", "ms_pro_inst", "ms_pro_dom", "ms_country"):
+        st.session_state.pop(key, None)
+    st.session_state["sel_results"] = "Any"
+
 
 # ── Main sidebar renderer ─────────────────────────────────────────────────────
 

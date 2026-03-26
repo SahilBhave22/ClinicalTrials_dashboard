@@ -15,7 +15,6 @@ from utils.filters import FilterState
 from services.trial_design_analysis import (
     allocation_summary,
     intervention_model_summary,
-    primary_purpose_summary,
 )
 from data.repository import (
     get_trial_design_metrics,
@@ -49,12 +48,11 @@ def render(filters: FilterState) -> None:
         no_data_callout("trial design data")
         return
 
-    alloc_df  = allocation_summary(design_df)
-    model_df  = intervention_model_summary(design_df)
-    purpose_df = primary_purpose_summary(design_df)
+    alloc_df = allocation_summary(design_df)
+    model_df = intervention_model_summary(design_df)
 
     # ── Row 1 ──────────────────────────────────────────────────────────────
-    c1, c2, c3 = st.columns(3)
+    c1, c2 = st.columns(2)
     with c1:
         if not alloc_df.empty:
             chart_tile(donut_chart(alloc_df, "allocation", "trial_count",
@@ -63,10 +61,6 @@ def render(filters: FilterState) -> None:
         if not model_df.empty:
             chart_tile(bar_chart(model_df, "intervention_model", "trial_count",
                                  orientation="h", title="Intervention Model"))
-    with c3:
-        if not purpose_df.empty:
-            chart_tile(donut_chart(purpose_df, "primary_purpose", "trial_count",
-                                   title="Primary Purpose"))
 
     # ── Arms distribution ──────────────────────────────────────────────────
     st.markdown("---")

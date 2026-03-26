@@ -670,41 +670,67 @@ def get_drug_conditions(filters: FilterState, limit: int = 20) -> pd.DataFrame:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def get_drug_classes(filters: FilterState) -> pd.DataFrame:
-    """Return ATC drug class counts for the current filter scope (DRUGS DB)."""
+    """Return ATC drug class counts for the current filter scope.
+
+    Two-step cross-DB query:
+      Step 1 (AACT DB)  — resolve which brand names are actually in scope.
+      Step 2 (Drugs DB) — look up ATC classes for those brands.
+    """
     from data.db import query_drugs
+    from data.query_builder import _list_clause, resolve_brand_names_from_drug_indication
     from config.settings import DRUG_CLASSES_TABLE, DRUGS_BRAND_COL, DRUGS_ATC_COL
 
     qb = QueryBuilder(filters)
-    brand_names = qb.brand_names
-    # If no ATC/indication filter is set, brand_names will be empty — fetch all
-    if not brand_names:
-        sql = f"""
-            SELECT
-                {DRUGS_ATC_COL}                   AS drug_class,
-                COUNT(DISTINCT {DRUGS_BRAND_COL}) AS brand_count
-            FROM {DRUG_CLASSES_TABLE}
-            WHERE {DRUGS_ATC_COL} IS NOT NULL
-              AND {DRUGS_ATC_COL} <> ''
-            GROUP BY 1 ORDER BY 2 DESC
-            LIMIT 10
-        """
-        return query_drugs(sql)
+    scope_clause, params = qb.study_scope_clause("s")
 
-    from data.query_builder import _list_clause
-    params: dict = {}
-    bn_frag = _list_clause(DRUGS_BRAND_COL, brand_names, params, "bn")
-    sql = f"""
+    # Build optional brand restriction (ATC-derived + user-selected + drug-indication).
+    restricted_brands: list[str] = []
+    if qb.brand_names:
+        restricted_brands.extend(qb.brand_names)
+    if filters.brand_name:
+        restricted_brands.extend(filters.brand_name)
+    if filters.drug_indication:
+        di_brands = resolve_brand_names_from_drug_indication(filters.drug_indication)
+        restricted_brands.extend(di_brands)
+    restricted_brands = list(dict.fromkeys(restricted_brands))  # deduplicate, preserve order
+
+    brand_filter = ""
+    if restricted_brands:
+        bn_p: dict = {}
+        bn_frag = _list_clause("dt.brand_name", restricted_brands, bn_p, "dcbf")
+        params.update(bn_p)
+        brand_filter = f"AND {bn_frag}"
+
+    # Step 1: get brand names that are in scope from AACT DB.
+    brands_sql = f"""
+        SELECT DISTINCT dt.brand_name
+        FROM ctgov.studies s
+        JOIN public.drug_trials dt ON dt.nct_id = s.nct_id
+        WHERE {scope_clause}
+          AND dt.brand_name IS NOT NULL
+          {brand_filter}
+    """
+    brands_df = query_aact(brands_sql, params)
+    if brands_df.empty:
+        return pd.DataFrame(columns=["drug_class", "brand_count"])
+
+    in_scope_brands = brands_df["brand_name"].dropna().tolist()
+
+    # Step 2: look up ATC classes for those brands from Drugs DB.
+    atc_params: dict = {}
+    bn_frag2 = _list_clause(DRUGS_BRAND_COL, in_scope_brands, atc_params, "atcbn")
+    atc_sql = f"""
         SELECT
             {DRUGS_ATC_COL}                   AS drug_class,
             COUNT(DISTINCT {DRUGS_BRAND_COL}) AS brand_count
         FROM {DRUG_CLASSES_TABLE}
-        WHERE {bn_frag}
+        WHERE {bn_frag2}
           AND {DRUGS_ATC_COL} IS NOT NULL
           AND {DRUGS_ATC_COL} <> ''
         GROUP BY 1 ORDER BY 2 DESC
         LIMIT 10
     """
-    return query_drugs(sql, params)
+    return query_drugs(atc_sql, atc_params)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -1076,6 +1102,32 @@ def get_design_outcome_type_dist(filters: FilterState) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300, show_spinner=False)
+def get_design_outcome_type_category_heatmap(filters: FilterState) -> pd.DataFrame:
+    """Pivoted DataFrame: rows=outcome_type, cols=outcome_category, values=unique trial count."""
+    qb = QueryBuilder(filters)
+    scope_clause, params = qb.study_scope_clause("s")
+    scope_where = f"AND {scope_clause}" if scope_clause else ""
+    sql = f"""
+        SELECT
+            COALESCE(do_.outcome_type, 'other') AS outcome_type,
+            dc.outcome_category,
+            COUNT(DISTINCT do_.nct_id)          AS trial_count
+        FROM ctgov.design_outcomes do_
+        JOIN public.drug_trial_design_outcome_categories dc ON dc.nct_id = do_.nct_id
+        JOIN ctgov.studies s ON s.nct_id = do_.nct_id
+        WHERE dc.outcome_category IS NOT NULL {scope_where}
+        GROUP BY 1, 2
+    """
+    df = query_aact(sql, params)
+    if df.empty:
+        return df
+    return df.pivot_table(
+        index="outcome_type", columns="outcome_category",
+        values="trial_count", fill_value=0,
+    )
+
+
+@st.cache_data(ttl=300, show_spinner=False)
 def get_planned_pro_usage(filters: FilterState) -> pd.DataFrame:
     qb = QueryBuilder(filters)
     scope_clause, params = qb.study_scope_clause("s")
@@ -1148,6 +1200,33 @@ def get_reported_outcome_type_dist(filters: FilterState) -> pd.DataFrame:
         GROUP BY 1 ORDER BY 2 DESC
     """
     return query_aact(sql, params)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_outcome_type_category_heatmap(filters: FilterState) -> pd.DataFrame:
+    """Pivoted DataFrame: rows=outcome_type, cols=outcome_category, values=unique trial count."""
+    qb = QueryBuilder(filters)
+    scope_clause, params = qb.study_scope_clause("s")
+    scope_where = f"AND {scope_clause}" if scope_clause else ""
+    sql = f"""
+        SELECT
+            COALESCE(o.outcome_type, 'OTHER') AS outcome_type,
+            oc.outcome_category,
+            COUNT(DISTINCT o.nct_id)          AS trial_count
+        FROM ctgov.outcomes o
+        JOIN public.drug_trial_outcome_categories oc
+            ON oc.nct_id = o.nct_id AND oc.outcome_id = o.id
+        JOIN ctgov.studies s ON s.nct_id = o.nct_id
+        WHERE oc.outcome_category IS NOT NULL {scope_where}
+        GROUP BY 1, 2
+    """
+    df = query_aact(sql, params)
+    if df.empty:
+        return df
+    return df.pivot_table(
+        index="outcome_type", columns="outcome_category",
+        values="trial_count", fill_value=0,
+    )
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -1489,8 +1568,8 @@ def get_result_groups(filters: FilterState, limit: int = MAX_TABLE_ROWS) -> pd.D
         SELECT
             rg.nct_id,
             rg.ctgov_group_code,
-            rg.scope,
-            rg.count,
+            rg.result_type,
+            rg.title,
             drg.brand_name,
             s.phase,
             s.overall_status
@@ -1498,7 +1577,7 @@ def get_result_groups(filters: FilterState, limit: int = MAX_TABLE_ROWS) -> pd.D
         JOIN ctgov.studies s ON s.nct_id = rg.nct_id
         LEFT JOIN public.drug_result_groups drg
                ON drg.nct_id = rg.nct_id
-               AND drg.result_group_id::text = rg.result_group_id::text
+               AND drg.result_group_id::text = rg.id::text
         WHERE rg.nct_id IS NOT NULL {scope_where}
         ORDER BY rg.nct_id, rg.ctgov_group_code
         LIMIT {limit}

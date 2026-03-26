@@ -344,15 +344,17 @@ def heatmap_chart(
     x_label: str = "",
     y_label: str = "",
     colorscale: str = "Blues",
+    tickangle: int | None = None,
+    height: int | None = None,
 ) -> go.Figure:
     if df_pivot.empty:
         return _base_fig(title)
     n_rows = len(df_pivot)
     n_cols = len(df_pivot.columns)
     # Scale height with data density; minimum 380, ~28px per row
-    dynamic_height = max(380, n_rows * 28 + 120)
+    dynamic_height = height if height is not None else max(380, n_rows * 28 + 120)
     # Rotate x-axis labels when there are many columns or long names
-    x_angle = -40 if n_cols > 6 else 0
+    x_angle = tickangle if tickangle is not None else (-40 if n_cols > 6 else 0)
     x_labels = _clip(df_pivot.columns.tolist())
     y_labels = _clip(df_pivot.index.tolist())
     fig = go.Figure(
@@ -372,7 +374,7 @@ def heatmap_chart(
         xaxis=dict(**_AXIS_X, title=x_label, tickangle=x_angle),
         yaxis=dict(**_AXIS, title=y_label),
     )
-    fig.update_layout(height=dynamic_height, margin=dict(l=20, r=20, t=55, b=60 if x_angle else 40))
+    fig.update_layout(height=dynamic_height, margin=dict(l=20, r=20, t=55, b=80 if x_angle else 40))
     return fig
 
 

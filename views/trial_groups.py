@@ -72,7 +72,27 @@ def render(filters: FilterState) -> None:
         else:
             with_drug = rg_df["brand_name"].notna().sum()
             st.metric("Result Groups with Drug Linkage", f"{with_drug:,}")
-            ag_table(rg_df, height=500, key="rg_table")
+
+            c1, c2 = st.columns(2)
+            with c1:
+                type_agg = (
+                    rg_df.groupby("result_type").size().reset_index(name="count")
+                    .sort_values("count", ascending=False)
+                )
+                chart_tile(donut_chart(type_agg, "result_type", "count",
+                                       title="Result Group Type Distribution"))
+            with c2:
+                drug_agg = (
+                    rg_df[rg_df["brand_name"].notna()]
+                    .groupby("brand_name").size().reset_index(name="group_count")
+                    .sort_values("group_count", ascending=False).head(15)
+                )
+                if not drug_agg.empty:
+                    chart_tile(bar_chart(drug_agg, "brand_name", "group_count",
+                                         orientation="h", title="Top Drugs in Result Groups"))
+
+            st.markdown("##### Result Groups Table")
+            ag_table(rg_df, height=450, key="rg_table")
             csv_download_button(rg_df, "result_groups.csv")
 
     with tab3:
