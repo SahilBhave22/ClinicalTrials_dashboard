@@ -10,6 +10,7 @@ import streamlit as st
 from components.page_header import page_header
 from components.filter_summary import filter_summary_bar
 from utils.filters import FilterState, get_filters, set_filters
+from data.repository import get_filter_options
 
 EXAMPLE_QUESTIONS = [
     "Phase 2 trials for NSCLC by AstraZeneca",
@@ -176,14 +177,15 @@ def _apply_filters(extracted: dict) -> None:
         if resolved:
             fs.indication_name = resolved
 
-    # 2. Sync global filter widget keys via direct assignment.
-    #    Popping these keys is unreliable: Streamlit may fall back to the
-    #    browser's cached frontend value rather than the `index` parameter,
-    #    causing render_sidebar() to overwrite fs.indication_name back to None
-    #    on the very next rerun.  Direct assignment is safe, is respected on
-    #    the next render, and does NOT trigger the on_change callback.
-    st.session_state["sb_indication"] = resolved or ""
-    st.session_state["sb_atc"]        = extracted.get("atc_class") or ""
+    # 2. Stage the desired widget values via pending keys.
+    #    render_sidebar() is called BEFORE this code runs in the same Streamlit
+    #    script execution, so sb_indication / sb_atc are already instantiated
+    #    and cannot be modified directly (raises StreamlitAPIException).
+    #    Instead, we store the values in non-widget pending keys; render_sidebar()
+    #    will read and apply them at the TOP of the next rerun, before the
+    #    selectbox widgets are instantiated.
+    st.session_state["_pending_sb_indication"] = resolved or ""
+    st.session_state["_pending_sb_atc"]        = extracted.get("atc_class") or ""
 
     # Pop downstream widget keys so sidebar re-reads from FilterState (default=)
     # on next rerun rather than returning stale session_state values.
@@ -226,6 +228,12 @@ def _apply_filters(extracted: dict) -> None:
         st.session_state.pop("sel_results", None)  # let sidebar re-read from FilterState
 
     set_filters(fs)
+
+    # Pre-warm the get_filter_options() cache so render_sidebar() gets an
+    # instant cache hit on the next rerun instead of blocking on 10+ cold
+    # DB queries while the sidebar is trying to render.
+    if fs.indication_name or fs.atc_class_name:
+        get_filter_options(fs.indication_name, fs.atc_class_name)
 
 
 # ── Page ──────────────────────────────────────────────────────────────────────

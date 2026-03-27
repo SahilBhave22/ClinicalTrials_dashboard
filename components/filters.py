@@ -198,6 +198,17 @@ def render_sidebar() -> FilterState:
     """
     fs = get_filters()
 
+    # ── Consume any pending widget values set by _apply_filters() ─────────────
+    # _apply_filters() cannot write to sb_indication/sb_atc directly because
+    # those widgets are instantiated later in this same function call (on the
+    # previous rerun they were already rendered before _apply_filters ran).
+    # Pending keys are set on the rerun that triggered st.rerun(), and consumed
+    # here at the very start of the next rerun — before any widget is created.
+    if "_pending_sb_indication" in st.session_state:
+        st.session_state["sb_indication"] = st.session_state.pop("_pending_sb_indication")
+    if "_pending_sb_atc" in st.session_state:
+        st.session_state["sb_atc"] = st.session_state.pop("_pending_sb_atc")
+
     with st.sidebar:
         # ── Sidebar header (filters only) ─────────────────────────────────────
         st.markdown(
@@ -217,13 +228,17 @@ def render_sidebar() -> FilterState:
         indication_opts = [""] + _get_indication_list()
         atc_opts        = [""] + _get_atc_class_list()
 
-        prev_ind = fs.indication_name or ""
-        prev_atc = fs.atc_class_name or ""
+        # Seed session state from FilterState only when the key is absent.
+        # This avoids the "default value + session state" conflict warning
+        # while still restoring the correct value after a rerun.
+        if "sb_indication" not in st.session_state:
+            st.session_state["sb_indication"] = fs.indication_name or ""
+        if "sb_atc" not in st.session_state:
+            st.session_state["sb_atc"] = fs.atc_class_name or ""
 
         sel_ind = st.selectbox(
             "Condition (Disease Area)",
             options=indication_opts,
-            index=indication_opts.index(prev_ind) if prev_ind in indication_opts else 0,
             help="MeSH mesh-list condition from ctgov.browse_conditions. Scopes all pages to trials with this condition that are also in drug_trials.",
             key="sb_indication",
             on_change=_on_global_filter_change,
@@ -232,7 +247,6 @@ def render_sidebar() -> FilterState:
         sel_atc = st.selectbox(
             "Drug Class (ATC)",
             options=atc_opts,
-            index=atc_opts.index(prev_atc) if prev_atc in atc_opts else 0,
             help="Filters all data to trials associated with this drug class. "
                  "Independent of Indication.",
             key="sb_atc",
