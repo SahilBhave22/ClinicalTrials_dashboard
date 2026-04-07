@@ -15,10 +15,10 @@ from __future__ import annotations
 import streamlit as st
 import pandas as pd
 
-from data.db import query_aact, query_aact_ae, query_aact_uncached
+from data.db import query_aact, query_aact_ae, query_aact_uncached, query_pricing, query_drugs
 from data.query_builder import QueryBuilder
 from utils.filters import FilterState
-from config.settings import MAX_TABLE_ROWS
+from config.settings import MAX_TABLE_ROWS, ANNUAL_PRICING_TABLE, HISTORICAL_PRICING_TABLE, DRUG_CLASSES_TABLE, DRUGS_ATC_COL, DRUGS_BRAND_COL, DRUG_INDICATIONS_TABLE, DRUGS_INDICATION_COL
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -2015,3 +2015,329 @@ def get_brand_options_from_drugs(indication: str | None, atc_class: str | None) 
 def run_nl_query(sql: str) -> pd.DataFrame:
     """Execute a user-confirmed NL-generated SQL query (no cache)."""
     return query_aact_uncached(sql)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  PRICING  (annual_pricing_table + historical_pricing)
+# ════════════════════════════════════════════════════════════════════════════
+
+def _get_pricing_brand_list(filters: FilterState) -> list[str]:
+    """
+    Resolve an effective brand name list for pricing queries.
+
+    Priority:
+      1. Explicit brand_name filter
+      2. ATC class → drug_classes lookup
+      3. Indication → drug_indications lookup (best-effort)
+      4. Empty list  → no brand filter, show all pricing data
+    """
+    if filters.brand_name:
+        return list(filters.brand_name)
+
+    if filters.atc_class_name:
+        sql = f"""
+            SELECT DISTINCT {DRUGS_BRAND_COL}
+            FROM {DRUG_CLASSES_TABLE}
+            WHERE {DRUGS_ATC_COL} = :atc
+              AND {DRUGS_BRAND_COL} IS NOT NULL
+            ORDER BY 1
+        """
+        df = query_drugs(sql, {"atc": filters.atc_class_name})
+        return df.iloc[:, 0].dropna().tolist() if not df.empty else []
+
+    if filters.indication_name:
+        sql = f"""
+            SELECT DISTINCT brand_name
+            FROM {DRUG_INDICATIONS_TABLE}
+            WHERE LOWER({DRUGS_INDICATION_COL}) = LOWER(:ind)
+              AND brand_name IS NOT NULL
+            ORDER BY 1
+        """
+        df = query_drugs(sql, {"ind": filters.indication_name})
+        return df.iloc[:, 0].dropna().tolist() if not df.empty else []
+
+    return []
+
+
+def _build_pricing_where(
+    brands: list[str],
+    drug_indication: str | None,
+    *,
+    include_disease: bool = True,
+) -> tuple[str, dict]:
+    """
+    Build a parameterized WHERE clause for annual_pricing_table queries.
+
+    Returns (clause_string, params_dict).  The clause never starts with WHERE
+    so callers can prepend it however they like.
+    """
+    clauses: list[str] = []
+    params: dict = {}
+
+    if brands:
+        clauses.append("LOWER(brand_name) = ANY(:brands)")
+        params["brands"] = [b.lower() for b in brands]
+
+    if include_disease and drug_indication:
+        clauses.append("LOWER(disease) = LOWER(:drug_indication)")
+        params["drug_indication"] = drug_indication
+
+    return (" AND ".join(clauses) if clauses else "1=1", params)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_pricing_kpis(filters: FilterState) -> dict:
+    """KPI summary for the Drug Pricing page."""
+    brands = _get_pricing_brand_list(filters)
+    where, params = _build_pricing_where(brands, filters.drug_indication)
+
+    sql_main = f"""
+        SELECT
+            COUNT(DISTINCT brand_name)    AS unique_drugs,
+            COUNT(DISTINCT dosage_form)   AS dosage_forms,
+            COUNT(DISTINCT disease)       AS unique_diseases,
+            MAX(quarter_start)            AS latest_quarter
+        FROM {ANNUAL_PRICING_TABLE}
+        WHERE {where}
+    """
+    df = query_pricing(sql_main, params)
+    if df.empty or df.iloc[0]["unique_drugs"] is None:
+        return {
+            "unique_drugs": 0, "dosage_forms": 0,
+            "unique_diseases": 0, "latest_total_cost": None,
+            "latest_quarter": None, "price_change_pct": None,
+        }
+
+    row = df.iloc[0]
+    latest_qtr = row["latest_quarter"]
+
+    # Total cost for latest quarter
+    sql_latest = f"""
+        SELECT COALESCE(SUM(total_cost_filled), 0) AS total_cost
+        FROM {ANNUAL_PRICING_TABLE}
+        WHERE {where}
+          AND quarter_start = :latest_qtr
+    """
+    p_latest = {**params, "latest_qtr": latest_qtr}
+    df_latest = query_pricing(sql_latest, p_latest)
+    latest_cost = float(df_latest.iloc[0]["total_cost"]) if not df_latest.empty else None
+
+    # Total cost one year prior (for YoY delta)
+    price_change_pct = None
+    if latest_qtr is not None:
+        try:
+            import datetime
+            prior_qtr = latest_qtr - datetime.timedelta(days=365)
+            sql_prior = f"""
+                SELECT COALESCE(SUM(total_cost_filled), 0) AS total_cost
+                FROM {ANNUAL_PRICING_TABLE}
+                WHERE {where}
+                  AND quarter_start = :prior_qtr
+            """
+            p_prior = {**params, "prior_qtr": prior_qtr}
+            df_prior = query_pricing(sql_prior, p_prior)
+            if not df_prior.empty:
+                prior_cost = float(df_prior.iloc[0]["total_cost"])
+                if prior_cost and prior_cost != 0:
+                    price_change_pct = ((latest_cost - prior_cost) / prior_cost) * 100
+        except Exception:
+            pass
+
+    return {
+        "unique_drugs":      int(row["unique_drugs"]),
+        "dosage_forms":      int(row["dosage_forms"]),
+        "unique_diseases":   int(row["unique_diseases"]),
+        "latest_total_cost": latest_cost,
+        "latest_quarter":    str(latest_qtr)[:10] if latest_qtr else None,
+        "price_change_pct":  price_change_pct,
+    }
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_annual_cost_over_time(filters: FilterState) -> pd.DataFrame:
+    """Total annual cost aggregated by quarter, for the active filter scope."""
+    brands = _get_pricing_brand_list(filters)
+    where, params = _build_pricing_where(brands, filters.drug_indication)
+    sql = f"""
+        SELECT
+            quarter_start,
+            SUM(total_cost_filled) AS total_cost
+        FROM {ANNUAL_PRICING_TABLE}
+        WHERE {where}
+        GROUP BY quarter_start
+        ORDER BY quarter_start
+    """
+    return query_pricing(sql, params)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_annual_cost_per_brand_over_time(filters: FilterState) -> pd.DataFrame:
+    """Annual cost per brand per quarter — used for the per-drug step-line chart."""
+    brands = _get_pricing_brand_list(filters)
+    where, params = _build_pricing_where(brands, filters.drug_indication)
+    sql = f"""
+        SELECT
+            brand_name,
+            quarter_start,
+            SUM(total_cost_filled) AS total_cost
+        FROM {ANNUAL_PRICING_TABLE}
+        WHERE {where}
+        GROUP BY brand_name, quarter_start
+        ORDER BY quarter_start, brand_name
+    """
+    return query_pricing(sql, params)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_annual_cost_by_dosage_form(filters: FilterState) -> pd.DataFrame:
+    """Annual cost broken down by dosage form over time."""
+    brands = _get_pricing_brand_list(filters)
+    where, params = _build_pricing_where(brands, filters.drug_indication)
+    sql = f"""
+        SELECT
+            COALESCE(dosage_form, 'Unknown') AS dosage_form,
+            quarter_start,
+            SUM(total_cost_filled) AS total_cost
+        FROM {ANNUAL_PRICING_TABLE}
+        WHERE {where}
+        GROUP BY dosage_form, quarter_start
+        ORDER BY quarter_start
+    """
+    return query_pricing(sql, params)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_annual_cost_by_disease(filters: FilterState) -> pd.DataFrame:
+    """Total cost per disease/indication, for the active filter scope."""
+    brands = _get_pricing_brand_list(filters)
+    # For disease breakdown we intentionally ignore the drug_indication filter
+    # so users can see the full disease split even when no indication is chosen.
+    where, params = _build_pricing_where(brands, None, include_disease=False)
+    sql = f"""
+        SELECT
+            COALESCE(disease, 'Unknown') AS disease,
+            SUM(total_cost_filled) AS total_cost
+        FROM {ANNUAL_PRICING_TABLE}
+        WHERE {where}
+        GROUP BY disease
+        ORDER BY total_cost DESC
+        LIMIT 20
+    """
+    return query_pricing(sql, params)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_wac_price_history(filters: FilterState) -> pd.DataFrame:
+    """WAC unit price history from historical_pricing, averaged per brand per date."""
+    brands = _get_pricing_brand_list(filters)
+    if brands:
+        brand_clause = "AND LOWER(brand_name) = ANY(:brands)"
+        params: dict = {"brands": [b.lower() for b in brands]}
+    else:
+        brand_clause = ""
+        params = {}
+
+    sql = f"""
+        SELECT
+            brand_name,
+            wac_unit_effective_date,
+            AVG(wac_unit_price) AS avg_wac_price
+        FROM {HISTORICAL_PRICING_TABLE}
+        WHERE wac_unit_price IS NOT NULL
+          {brand_clause}
+        GROUP BY brand_name, wac_unit_effective_date
+        ORDER BY wac_unit_effective_date
+    """
+    return query_pricing(sql, params)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_annual_cost_by_drug_class(filters: FilterState) -> pd.DataFrame:
+    """
+    Average latest-quarter annual cost per ATC drug class.
+
+    Cross-DB: costs come from the pricing DB; class mapping from the drugs DB.
+    The merge is done in Python after both queries return.
+    """
+    brands = _get_pricing_brand_list(filters)
+    where, params = _build_pricing_where(brands, filters.drug_indication)
+
+    # Latest quarter available under the current filter scope
+    qtr_sql = f"SELECT MAX(quarter_start) AS latest_qtr FROM {ANNUAL_PRICING_TABLE} WHERE {where}"
+    qtr_df = query_pricing(qtr_sql, params)
+    if qtr_df.empty or qtr_df.iloc[0]["latest_qtr"] is None:
+        return pd.DataFrame()
+    latest_qtr = qtr_df.iloc[0]["latest_qtr"]
+
+    # Cost per brand for the latest quarter
+    cost_sql = f"""
+        SELECT
+            LOWER(brand_name) AS brand_key,
+            SUM(total_cost_filled) AS total_cost
+        FROM {ANNUAL_PRICING_TABLE}
+        WHERE {where}
+          AND quarter_start = :latest_qtr
+        GROUP BY LOWER(brand_name)
+    """
+    cost_df = query_pricing(cost_sql, {**params, "latest_qtr": latest_qtr})
+    if cost_df.empty:
+        return pd.DataFrame()
+
+    # ATC class mapping — scoped to resolved brands if any, else all
+    if brands:
+        class_sql = f"""
+            SELECT DISTINCT
+                LOWER({DRUGS_BRAND_COL}) AS brand_key,
+                {DRUGS_ATC_COL}          AS drug_class
+            FROM {DRUG_CLASSES_TABLE}
+            WHERE LOWER({DRUGS_BRAND_COL}) = ANY(:brands)
+              AND {DRUGS_ATC_COL} IS NOT NULL
+              AND {DRUGS_ATC_COL} <> ''
+        """
+        class_df = query_drugs(class_sql, {"brands": [b.lower() for b in brands]})
+    else:
+        class_sql = f"""
+            SELECT DISTINCT
+                LOWER({DRUGS_BRAND_COL}) AS brand_key,
+                {DRUGS_ATC_COL}          AS drug_class
+            FROM {DRUG_CLASSES_TABLE}
+            WHERE {DRUGS_ATC_COL} IS NOT NULL
+              AND {DRUGS_ATC_COL} <> ''
+        """
+        class_df = query_drugs(class_sql, {})
+
+    if class_df.empty:
+        return pd.DataFrame()
+
+    merged = cost_df.merge(class_df, on="brand_key", how="inner")
+    if merged.empty:
+        return pd.DataFrame()
+
+    result = (
+        merged.groupby("drug_class", as_index=False)["total_cost"]
+        .mean()
+        .rename(columns={"total_cost": "avg_cost"})
+        .sort_values("avg_cost", ascending=False)
+        .head(20)
+    )
+    return result
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_annual_pricing_raw(filters: FilterState) -> pd.DataFrame:
+    """Full annual_pricing_table rows for the table view and CSV download."""
+    brands = _get_pricing_brand_list(filters)
+    where, params = _build_pricing_where(brands, filters.drug_indication)
+    sql = f"""
+        SELECT
+            brand_name,
+            disease,
+            dosage_form,
+            quarter_start,
+            total_cost_filled
+        FROM {ANNUAL_PRICING_TABLE}
+        WHERE {where}
+        ORDER BY quarter_start DESC, brand_name
+        LIMIT {MAX_TABLE_ROWS}
+    """
+    return query_pricing(sql, params)

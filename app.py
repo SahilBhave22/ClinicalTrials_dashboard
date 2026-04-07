@@ -37,6 +37,7 @@ PAGE_MAP = [
     ("💬 Ask the Data",  "views.ask_the_data"),
     ("📈 Pipeline",      "views.pipeline_landscape"),
     ("💊 Drug Detail",   "views.drug_detail"),
+    ("💰 Drug Pricing",  "views.drug_pricing"),
     ("🏢 Sponsors",      "views.sponsor_benchmark"),
     ("📋 Trial Design",  "views.trial_design"),
     ("🎯 Endpoints",     "views.planned_endpoints"),

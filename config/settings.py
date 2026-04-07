@@ -84,6 +84,11 @@ STATUS_COLORS = {
 
 CATEGORICAL_PALETTE = COLORS["chart_sequence"]
 
+# ── Pricing DB ────────────────────────────────────────────────────────────────
+DB_PRICING                = "pricing"
+ANNUAL_PRICING_TABLE      = "annual_pricing_table"
+HISTORICAL_PRICING_TABLE  = "historical_pricing"
+
 # ── Page nav ─────────────────────────────────────────────────────────────────
 PAGES = [
     {"label": "Home / Overview",        "icon": "🏠", "key": "home"},
