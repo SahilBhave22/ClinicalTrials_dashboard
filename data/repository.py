@@ -15,10 +15,14 @@ from __future__ import annotations
 import streamlit as st
 import pandas as pd
 
-from data.db import query_aact, query_aact_ae, query_aact_uncached, query_pricing, query_drugs
+from data.db import query_aact, query_aact_ae, query_aact_uncached, query_pricing, query_drugs, query_market_access
 from data.query_builder import QueryBuilder
 from utils.filters import FilterState
-from config.settings import MAX_TABLE_ROWS, ANNUAL_PRICING_TABLE, HISTORICAL_PRICING_TABLE, DRUG_CLASSES_TABLE, DRUGS_ATC_COL, DRUGS_BRAND_COL, DRUG_INDICATIONS_TABLE, DRUGS_INDICATION_COL
+from config.settings import (
+    MAX_TABLE_ROWS, ANNUAL_PRICING_TABLE, HISTORICAL_PRICING_TABLE,
+    DRUG_CLASSES_TABLE, DRUGS_ATC_COL, DRUGS_BRAND_COL, DRUG_INDICATIONS_TABLE, DRUGS_INDICATION_COL,
+    MA_TABLE_2025, MA_TABLE_2026,
+)
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -2079,8 +2083,8 @@ def _build_pricing_where(
         params["brands"] = [b.lower() for b in brands]
 
     if include_disease and drug_indication:
-        clauses.append("LOWER(disease) = LOWER(:drug_indication)")
-        params["drug_indication"] = drug_indication
+        clauses.append("LOWER(TRIM(disease)) = :drug_indication")
+        params["drug_indication"] = drug_indication.lower().strip()
 
     return (" AND ".join(clauses) if clauses else "1=1", params)
 
@@ -2093,10 +2097,10 @@ def get_pricing_kpis(filters: FilterState) -> dict:
 
     sql_main = f"""
         SELECT
-            COUNT(DISTINCT brand_name)    AS unique_drugs,
-            COUNT(DISTINCT dosage_form)   AS dosage_forms,
-            COUNT(DISTINCT disease)       AS unique_diseases,
-            MAX(quarter_start)            AS latest_quarter
+            COUNT(DISTINCT brand_name)              AS unique_drugs,
+            COUNT(DISTINCT dosage_form)             AS dosage_forms,
+            COUNT(DISTINCT LOWER(TRIM(disease)))    AS unique_diseases,
+            MAX(quarter_start)                      AS latest_quarter
         FROM {ANNUAL_PRICING_TABLE}
         WHERE {where}
     """
@@ -2215,11 +2219,11 @@ def get_annual_cost_by_disease(filters: FilterState) -> pd.DataFrame:
     where, params = _build_pricing_where(brands, None, include_disease=False)
     sql = f"""
         SELECT
-            COALESCE(disease, 'Unknown') AS disease,
+            COALESCE(LOWER(TRIM(disease)), 'unknown') AS disease,
             SUM(total_cost_filled) AS total_cost
         FROM {ANNUAL_PRICING_TABLE}
         WHERE {where}
-        GROUP BY disease
+        GROUP BY LOWER(TRIM(disease))
         ORDER BY total_cost DESC
         LIMIT 20
     """
@@ -2331,7 +2335,7 @@ def get_annual_pricing_raw(filters: FilterState) -> pd.DataFrame:
     sql = f"""
         SELECT
             brand_name,
-            disease,
+            LOWER(TRIM(disease))  AS disease,
             dosage_form,
             quarter_start,
             total_cost_filled
@@ -2341,3 +2345,281 @@ def get_annual_pricing_raw(filters: FilterState) -> pd.DataFrame:
         LIMIT {MAX_TABLE_ROWS}
     """
     return query_pricing(sql, params)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  MARKET ACCESS  (mapped_access_2025 / mapped_access_2026)
+# ════════════════════════════════════════════════════════════════════════════
+
+def _get_ma_table(year: int) -> str:
+    return MA_TABLE_2025 if year == 2025 else MA_TABLE_2026
+
+
+def _build_ma_where(brands: list[str]) -> tuple[str, dict]:
+    """Parameterized WHERE clause for market access tables (brand filter only)."""
+    if brands:
+        return "LOWER(brand_name) = ANY(:brands)", {"brands": [b.lower() for b in brands]}
+    return "1=1", {}
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_ma_kpis(filters: FilterState, year: int = 2025) -> dict:
+    """KPI summary for the Market Access page."""
+    brands = _get_pricing_brand_list(filters)
+    where, params = _build_ma_where(brands)
+    table = _get_ma_table(year)
+
+    sql = f"""
+        SELECT
+            COUNT(*)                                                               AS total_drugs,
+            COUNT(*) FILTER (WHERE aetna_req  ILIKE '%PA%'
+                               OR cigna_req   ILIKE '%PA%'
+                               OR united_req  ILIKE '%PA%'
+                               OR kaiser_req  ILIKE '%PA%'
+                               OR optum_req   ILIKE '%PA%'
+                               OR anthem_req  ILIKE '%PA%')                        AS pa_count,
+            COUNT(*) FILTER (WHERE aetna_req  ILIKE '%QL%'
+                               OR cigna_req   ILIKE '%QL%'
+                               OR united_req  ILIKE '%QL%'
+                               OR kaiser_req  ILIKE '%QL%'
+                               OR optum_req   ILIKE '%QL%'
+                               OR anthem_req  ILIKE '%QL%')                        AS ql_count,
+            COUNT(*) FILTER (WHERE aetna_req  ILIKE '%SP%'
+                               OR cigna_req   ILIKE '%SP%'
+                               OR united_req  ILIKE '%SP%'
+                               OR kaiser_req  ILIKE '%SP%'
+                               OR optum_req   ILIKE '%SP%'
+                               OR anthem_req  ILIKE '%SP%')                        AS sp_count
+        FROM {table}
+        WHERE {where}
+    """
+    df = query_market_access(sql, params)
+    if df.empty or df.iloc[0]["total_drugs"] is None:
+        return {"total_drugs": 0, "pa_pct": 0.0, "ql_pct": 0.0, "sp_pct": 0.0}
+
+    row = df.iloc[0]
+    total = int(row["total_drugs"]) or 1
+    return {
+        "total_drugs": int(row["total_drugs"]),
+        "pa_pct": round(int(row["pa_count"]) / total * 100, 1),
+        "ql_pct": round(int(row["ql_count"]) / total * 100, 1),
+        "sp_pct": round(int(row["sp_count"]) / total * 100, 1),
+    }
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_ma_avg_tier_by_payer(filters: FilterState, year: int = 2025) -> pd.DataFrame:
+    """Average formulary tier per payer for the selected year."""
+    brands = _get_pricing_brand_list(filters)
+    where, params = _build_ma_where(brands)
+    table = _get_ma_table(year)
+
+    sql = f"""
+        SELECT 'Aetna'           AS payer, ROUND(AVG(NULLIF(aetna_tier,  '')::numeric), 2) AS avg_tier FROM {table} WHERE {where} AND NULLIF(aetna_tier,  '') IS NOT NULL
+        UNION ALL
+        SELECT 'Cigna',                    ROUND(AVG(NULLIF(cigna_tier,  '')::numeric), 2)             FROM {table} WHERE {where} AND NULLIF(cigna_tier,  '') IS NOT NULL
+        UNION ALL
+        SELECT 'UnitedHealthcare',         ROUND(AVG(NULLIF(united_tier, '')::numeric), 2)             FROM {table} WHERE {where} AND NULLIF(united_tier, '') IS NOT NULL
+        UNION ALL
+        SELECT 'Kaiser',                   ROUND(AVG(NULLIF(kaiser_tier, '')::numeric), 2)             FROM {table} WHERE {where} AND NULLIF(kaiser_tier, '') IS NOT NULL
+        UNION ALL
+        SELECT 'OptumRx',                  ROUND(AVG(NULLIF(optum_tier,  '')::numeric), 2)             FROM {table} WHERE {where} AND NULLIF(optum_tier,  '') IS NOT NULL
+        UNION ALL
+        SELECT 'Anthem',                   ROUND(AVG(NULLIF(anthem_tier, '')::numeric), 2)             FROM {table} WHERE {where} AND NULLIF(anthem_tier, '') IS NOT NULL
+        ORDER BY avg_tier
+    """
+    return query_market_access(sql, params)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_ma_requirement_breakdown(filters: FilterState, year: int = 2025) -> pd.DataFrame:
+    """Utilization-management requirement type counts per payer."""
+    brands = _get_pricing_brand_list(filters)
+    where, params = _build_ma_where(brands)
+    table = _get_ma_table(year)
+
+    def _payer_block(label: str, col: str) -> str:
+        return f"""
+        SELECT '{label}' AS payer,
+               CASE
+                   WHEN {col} IS NULL OR TRIM({col}) = '' THEN 'None'
+                   WHEN {col} ILIKE '%PA%' AND {col} ILIKE '%QL%'  THEN 'PA+QL'
+                   WHEN {col} ILIKE '%PA%' AND {col} ILIKE '%SP%'  THEN 'PA+SP'
+                   WHEN {col} ILIKE '%PA%'                          THEN 'PA'
+                   WHEN {col} ILIKE '%QL%'                          THEN 'QL'
+                   WHEN {col} ILIKE '%SP%'                          THEN 'SP'
+                   ELSE 'Other'
+               END AS req_type,
+               COUNT(*) AS drug_count
+        FROM {table} WHERE {where}
+        GROUP BY payer, req_type"""
+
+    sql = (
+        _payer_block("Aetna",            "aetna_req")  + " UNION ALL " +
+        _payer_block("Cigna",            "cigna_req")  + " UNION ALL " +
+        _payer_block("UnitedHealthcare", "united_req") + " UNION ALL " +
+        _payer_block("Kaiser",           "kaiser_req") + " UNION ALL " +
+        _payer_block("OptumRx",          "optum_req")  + " UNION ALL " +
+        _payer_block("Anthem",           "anthem_req") +
+        " ORDER BY payer, req_type"
+    )
+    return query_market_access(sql, params)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_ma_brand_payer_heatmap(filters: FilterState, year: int = 2025, limit: int = 25) -> pd.DataFrame:
+    """
+    Wide brand × payer tier data for the heatmap.
+    Returns a DataFrame already pivoted: index = brand_name, columns = payer labels, values = tier.
+    """
+    brands = _get_pricing_brand_list(filters)
+    where, params = _build_ma_where(brands)
+    params["lim"] = limit
+    table = _get_ma_table(year)
+
+    sql = f"""
+        SELECT
+            brand_name,
+            aetna_tier, cigna_tier, united_tier, kaiser_tier, optum_tier, anthem_tier,
+            ROUND(
+                (COALESCE(NULLIF(aetna_tier,  '')::numeric, 0) + COALESCE(NULLIF(cigna_tier,  '')::numeric, 0) + COALESCE(NULLIF(united_tier, '')::numeric, 0)
+               + COALESCE(NULLIF(kaiser_tier, '')::numeric, 0) + COALESCE(NULLIF(optum_tier,  '')::numeric, 0) + COALESCE(NULLIF(anthem_tier, '')::numeric, 0))
+                / NULLIF(
+                    (CASE WHEN NULLIF(aetna_tier,  '') IS NOT NULL THEN 1 ELSE 0 END
+                   + CASE WHEN NULLIF(cigna_tier,  '') IS NOT NULL THEN 1 ELSE 0 END
+                   + CASE WHEN NULLIF(united_tier, '') IS NOT NULL THEN 1 ELSE 0 END
+                   + CASE WHEN NULLIF(kaiser_tier, '') IS NOT NULL THEN 1 ELSE 0 END
+                   + CASE WHEN NULLIF(optum_tier,  '') IS NOT NULL THEN 1 ELSE 0 END
+                   + CASE WHEN NULLIF(anthem_tier, '') IS NOT NULL THEN 1 ELSE 0 END)
+                , 0)::numeric
+            , 2) AS avg_tier
+        FROM {table}
+        WHERE {where} AND brand_name IS NOT NULL
+        ORDER BY avg_tier DESC NULLS LAST
+        LIMIT :lim
+    """
+    df = query_market_access(sql, params)
+    if df.empty:
+        return pd.DataFrame()
+
+    col_map = {
+        "aetna_tier":  "Aetna",
+        "cigna_tier":  "Cigna",
+        "united_tier": "UnitedHealthcare",
+        "kaiser_tier": "Kaiser",
+        "optum_tier":  "OptumRx",
+        "anthem_tier": "Anthem",
+    }
+    df = df[["brand_name"] + list(col_map.keys())].rename(columns=col_map)
+    return df.set_index("brand_name")
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_ma_brands_by_avg_tier(filters: FilterState, year: int = 2025, limit: int = 20) -> pd.DataFrame:
+    """Top brands ranked by average formulary tier (highest = most restrictive)."""
+    brands = _get_pricing_brand_list(filters)
+    where, params = _build_ma_where(brands)
+    params["lim"] = limit
+    table = _get_ma_table(year)
+
+    sql = f"""
+        SELECT
+            brand_name,
+            ROUND(
+                (COALESCE(NULLIF(aetna_tier,  '')::numeric, 0) + COALESCE(NULLIF(cigna_tier,  '')::numeric, 0) + COALESCE(NULLIF(united_tier, '')::numeric, 0)
+               + COALESCE(NULLIF(kaiser_tier, '')::numeric, 0) + COALESCE(NULLIF(optum_tier,  '')::numeric, 0) + COALESCE(NULLIF(anthem_tier, '')::numeric, 0))
+                / NULLIF(
+                    (CASE WHEN NULLIF(aetna_tier,  '') IS NOT NULL THEN 1 ELSE 0 END
+                   + CASE WHEN NULLIF(cigna_tier,  '') IS NOT NULL THEN 1 ELSE 0 END
+                   + CASE WHEN NULLIF(united_tier, '') IS NOT NULL THEN 1 ELSE 0 END
+                   + CASE WHEN NULLIF(kaiser_tier, '') IS NOT NULL THEN 1 ELSE 0 END
+                   + CASE WHEN NULLIF(optum_tier,  '') IS NOT NULL THEN 1 ELSE 0 END
+                   + CASE WHEN NULLIF(anthem_tier, '') IS NOT NULL THEN 1 ELSE 0 END)
+                , 0)::numeric
+            , 2) AS avg_tier
+        FROM {table}
+        WHERE {where} AND brand_name IS NOT NULL
+        ORDER BY avg_tier DESC NULLS LAST
+        LIMIT :lim
+    """
+    return query_market_access(sql, params)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_ma_yoy_comparison(filters: FilterState) -> pd.DataFrame:
+    """Average tier per payer for 2025 and 2026 combined — for the year-comparison grouped bar chart."""
+    brands = _get_pricing_brand_list(filters)
+    where, params = _build_ma_where(brands)
+
+    def _year_blocks(table: str, year_label: str) -> str:
+        return (
+            f"SELECT '{year_label}' AS year, 'Aetna'           AS payer, ROUND(AVG(NULLIF(aetna_tier,  '')::numeric), 2) AS avg_tier FROM {table} WHERE {where} AND NULLIF(aetna_tier,  '') IS NOT NULL UNION ALL "
+            f"SELECT '{year_label}',         'Cigna',                    ROUND(AVG(NULLIF(cigna_tier,  '')::numeric), 2)             FROM {table} WHERE {where} AND NULLIF(cigna_tier,  '') IS NOT NULL UNION ALL "
+            f"SELECT '{year_label}',         'UnitedHealthcare',         ROUND(AVG(NULLIF(united_tier, '')::numeric), 2)             FROM {table} WHERE {where} AND NULLIF(united_tier, '') IS NOT NULL UNION ALL "
+            f"SELECT '{year_label}',         'Kaiser',                   ROUND(AVG(NULLIF(kaiser_tier, '')::numeric), 2)             FROM {table} WHERE {where} AND NULLIF(kaiser_tier, '') IS NOT NULL UNION ALL "
+            f"SELECT '{year_label}',         'OptumRx',                  ROUND(AVG(NULLIF(optum_tier,  '')::numeric), 2)             FROM {table} WHERE {where} AND NULLIF(optum_tier,  '') IS NOT NULL UNION ALL "
+            f"SELECT '{year_label}',         'Anthem',                   ROUND(AVG(NULLIF(anthem_tier, '')::numeric), 2)             FROM {table} WHERE {where} AND NULLIF(anthem_tier, '') IS NOT NULL"
+        )
+
+    sql = _year_blocks(MA_TABLE_2025, "2025") + " UNION ALL " + _year_blocks(MA_TABLE_2026, "2026") + " ORDER BY payer, year"
+    return query_market_access(sql, params)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_ma_detail_table(filters: FilterState, year: int = 2025) -> pd.DataFrame:
+    """Full brand-level market access detail for the selected year."""
+    brands = _get_pricing_brand_list(filters)
+    where, params = _build_ma_where(brands)
+    table = _get_ma_table(year)
+
+    sql = f"""
+        SELECT
+            brand_name, generic_name,
+            aetna_tier,  aetna_req,
+            cigna_tier,  cigna_req,
+            united_tier, united_req,
+            kaiser_tier, kaiser_req,
+            optum_tier,  optum_req,
+            anthem_tier, anthem_req
+        FROM {table}
+        WHERE {where}
+        ORDER BY brand_name
+        LIMIT {MAX_TABLE_ROWS}
+    """
+    return query_market_access(sql, params)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_ma_tier_grid(filters: FilterState, year: int = 2025, limit: int = 50) -> pd.DataFrame:
+    """Tier-only grid (brand × payer) for the categorical tier heatmap."""
+    brands = _get_pricing_brand_list(filters)
+    where, params = _build_ma_where(brands)
+    params["lim"] = limit
+    table = _get_ma_table(year)
+
+    sql = f"""
+        SELECT brand_name, aetna_tier, cigna_tier, united_tier, kaiser_tier, optum_tier, anthem_tier
+        FROM {table}
+        WHERE {where} AND brand_name IS NOT NULL
+        ORDER BY brand_name
+        LIMIT :lim
+    """
+    return query_market_access(sql, params)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_ma_req_grid(filters: FilterState, year: int = 2025, limit: int = 50) -> pd.DataFrame:
+    """Requirement-only grid (brand × payer) for the PA/QL/SP checkbox chart."""
+    brands = _get_pricing_brand_list(filters)
+    where, params = _build_ma_where(brands)
+    params["lim"] = limit
+    table = _get_ma_table(year)
+
+    sql = f"""
+        SELECT brand_name, aetna_req, cigna_req, united_req, kaiser_req, optum_req, anthem_req
+        FROM {table}
+        WHERE {where} AND brand_name IS NOT NULL
+        ORDER BY brand_name
+        LIMIT :lim
+    """
+    return query_market_access(sql, params)

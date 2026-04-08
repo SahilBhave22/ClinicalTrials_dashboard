@@ -10,7 +10,7 @@ import pandas as pd
 
 # Import the existing db_conn utilities
 from utils.db_conn import exec_sql, get_engine  # noqa: F401 (re-export)
-from config.settings import DB_AACT, DB_DRUGS, DB_PRICING
+from config.settings import DB_AACT, DB_DRUGS, DB_PRICING, DB_MARKET_ACCESS
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -59,4 +59,14 @@ def query_pricing(sql: str, params: dict | None = None) -> pd.DataFrame:
         return exec_sql(sql, DB_PRICING, params)
     except Exception as e:
         st.error(f"Pricing DB query error: {e}")
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def query_market_access(sql: str, params: dict | None = None) -> pd.DataFrame:
+    """Execute a read-only SQL query against the Market Access database with caching."""
+    try:
+        return exec_sql(sql, DB_MARKET_ACCESS, params)
+    except Exception as e:
+        st.error(f"Market Access DB query error: {e}")
         return pd.DataFrame()

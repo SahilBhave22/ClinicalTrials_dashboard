@@ -89,6 +89,20 @@ DB_PRICING                = "pricing"
 ANNUAL_PRICING_TABLE      = "annual_pricing_table"
 HISTORICAL_PRICING_TABLE  = "historical_pricing"
 
+# ── Market Access DB ──────────────────────────────────────────────────────────
+DB_MARKET_ACCESS = "marketaccess"
+MA_TABLE_2025    = "mapped_access_2025"
+MA_TABLE_2026    = "mapped_access_2026"
+MA_PAYERS        = ["aetna", "cigna", "united", "kaiser", "optum", "anthem"]
+MA_PAYER_LABELS  = {
+    "aetna":  "Aetna",
+    "cigna":  "Cigna",
+    "united": "UnitedHealthcare",
+    "kaiser": "Kaiser",
+    "optum":  "OptumRx",
+    "anthem": "Anthem",
+}
+
 # ── Page nav ─────────────────────────────────────────────────────────────────
 PAGES = [
     {"label": "Home / Overview",        "icon": "🏠", "key": "home"},
