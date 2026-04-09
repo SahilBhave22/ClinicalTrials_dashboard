@@ -23,6 +23,7 @@ from data.repository import (
     get_annual_pricing_raw,
 )
 from config.settings import CATEGORICAL_PALETTE
+from services.ai_summary import build_drug_pricing_context, generate_summary, filter_hash
 
 
 # ── Formatting helpers ────────────────────────────────────────────────────────
@@ -251,3 +252,75 @@ def render(filters: FilterState) -> None:
             })
             ag_table(display_df, key="pricing_raw_table")
             csv_download_button(display_df, filename="drug_pricing.csv")
+
+    # ── AI Summary button ──────────────────────────────────────────────────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    _render_ai_summary(filters, kpis, brand_cost_df, drug_class_df, wac_df)
+
+
+# ── AI Summary helpers ─────────────────────────────────────────────────────────
+
+def _render_ai_summary(filters, kpis, brand_cost_df, drug_class_df, wac_df):
+    """Render the AI Summary button and result card for the Drug Pricing page."""
+    _, btn_col = st.columns([4, 1])
+
+    with btn_col:
+        if filters.has_any_filter():
+            clicked = st.button(
+                "🤖 AI Summary",
+                use_container_width=True,
+                key="pricing_ai_btn",
+                help="Generate an AI-powered analyst summary of the current pricing data.",
+            )
+        else:
+            st.caption("Apply a filter to enable AI Summary.")
+            clicked = False
+
+    if clicked:
+        current_hash = filter_hash(filters)
+        if st.session_state.get("pricing_summary_hash") != current_hash:
+            with st.spinner("Generating AI summary…"):
+                context = build_drug_pricing_context(
+                    kpis, brand_cost_df, drug_class_df, wac_df, filters
+                )
+                summary = generate_summary(context, page_name="Drug Pricing")
+            if summary:
+                st.session_state["pricing_ai_summary"] = summary
+                st.session_state["pricing_summary_hash"] = current_hash
+
+    # Clear cached summary if filters have changed
+    current_hash = filter_hash(filters)
+    if (
+        "pricing_summary_hash" in st.session_state
+        and st.session_state["pricing_summary_hash"] != current_hash
+    ):
+        st.session_state.pop("pricing_ai_summary", None)
+        st.session_state.pop("pricing_summary_hash", None)
+
+    if st.session_state.get("pricing_ai_summary"):
+        st.markdown(
+            """
+            <div style="
+                background: white;
+                border: 1px solid #E5E7EB;
+                border-left: 4px solid #0F4C81;
+                border-radius: 12px;
+                padding: 24px 28px;
+                margin: 8px 0 24px 0;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+            ">
+            <div style="
+                font-size: 11px;
+                color: #6B7280;
+                font-weight: 600;
+                letter-spacing: 0.05em;
+                text-transform: uppercase;
+                margin-bottom: 16px;
+            ">
+                🤖 AI Generated &nbsp;·&nbsp; GPT-4o &nbsp;·&nbsp; Based on current filters
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.markdown(st.session_state["pricing_ai_summary"])
+        st.markdown("</div>", unsafe_allow_html=True)

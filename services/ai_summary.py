@@ -117,6 +117,88 @@ def build_pro_overview_context(
     }
 
 
+def build_market_access_context(
+    kpis: dict,
+    tier_df: pd.DataFrame,
+    req_df: pd.DataFrame,
+    year: int,
+    filters: FilterState,
+) -> dict:
+    """Serialise Market Access page data into a structured dict for the prompt."""
+    return {
+        "page": "Market Access",
+        "filters": filters.active_filter_summary(),
+        "kpis": {
+            "Formulary Year":       year,
+            "Drugs Tracked":        kpis.get("total_drugs", 0),
+            "With Prior Auth (PA)": f"{kpis.get('pa_pct', 0):.1f}%",
+            "With Qty Limits (QL)": f"{kpis.get('ql_pct', 0):.1f}%",
+            "With Specialty (SP)":  f"{kpis.get('sp_pct', 0):.1f}%",
+            "Payers Covered":       6,
+        },
+        "sections": {
+            f"Formulary Tier Grid ({year})": _df_to_md(
+                tier_df,
+                ["brand_name", "aetna_tier", "cigna_tier", "united_tier",
+                 "kaiser_tier", "optum_tier", "anthem_tier"],
+                _TABLE_LIMIT,
+            ),
+            f"Utilization-Management Requirements ({year})": _df_to_md(
+                req_df,
+                ["brand_name", "aetna_req", "cigna_req", "united_req",
+                 "kaiser_req", "optum_req", "anthem_req"],
+                _TABLE_LIMIT,
+            ),
+        },
+    }
+
+
+def build_drug_pricing_context(
+    kpis: dict,
+    brand_cost_df: pd.DataFrame,
+    drug_class_df: pd.DataFrame,
+    wac_df: pd.DataFrame,
+    filters: FilterState,
+) -> dict:
+    """Serialise Drug Pricing page data into a structured dict for the prompt."""
+    latest_cost = pd.DataFrame()
+    if not brand_cost_df.empty and "brand_name" in brand_cost_df.columns:
+        latest_cost = (
+            brand_cost_df.sort_values("quarter_start", ascending=False)
+            .drop_duplicates("brand_name")[["brand_name", "quarter_start", "total_cost"]]
+            .head(_TABLE_LIMIT)
+        )
+
+    latest_wac = pd.DataFrame()
+    if not wac_df.empty and "brand_name" in wac_df.columns:
+        latest_wac = (
+            wac_df.sort_values("wac_unit_effective_date", ascending=False)
+            .drop_duplicates("brand_name")[["brand_name", "wac_unit_effective_date", "avg_wac_price"]]
+            .head(_TABLE_LIMIT)
+        )
+
+    latest_cost_val = kpis.get("latest_total_cost")
+    price_chg_val   = kpis.get("price_change_pct")
+
+    return {
+        "page": "Drug Pricing",
+        "filters": filters.active_filter_summary(),
+        "kpis": {
+            "Unique Drugs":     kpis.get("unique_drugs", 0),
+            "Dosage Forms":     kpis.get("dosage_forms", 0),
+            "Unique Diseases":  kpis.get("unique_diseases", 0),
+            "Latest Quarter":   kpis.get("latest_quarter") or "—",
+            "Latest Total Cost": f"${latest_cost_val:,.0f}" if latest_cost_val is not None else "—",
+            "Price Change YoY":  f"{price_chg_val:+.1f}%" if price_chg_val is not None else "—",
+        },
+        "sections": {
+            "Latest Annual Cost per Drug":    _df_to_md(latest_cost,   ["brand_name", "quarter_start", "total_cost"],                  _TABLE_LIMIT),
+            "Avg Annual Cost by Drug Class":  _df_to_md(drug_class_df, ["drug_class", "avg_cost"],                                     _TABLE_LIMIT),
+            "Latest WAC Unit Price per Drug": _df_to_md(latest_wac,    ["brand_name", "wac_unit_effective_date", "avg_wac_price"],     _TABLE_LIMIT),
+        },
+    }
+
+
 # ── Core generation ───────────────────────────────────────────────────────────
 
 def generate_summary(context_dict: dict, page_name: str = "Drug Detail") -> str | None:

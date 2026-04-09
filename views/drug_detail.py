@@ -54,7 +54,7 @@ def render(filters: FilterState) -> None:
         {"label": "Total Trials",  "value": kpis["total_trials"],        "icon": "🧪"},
         {"label": "Completed",     "value": kpis["completed_trials"],    "icon": "✅"},
         {"label": "With Results",  "value": kpis["trials_with_results"], "icon": "📋"},
-        {"label": "Brand Names",   "value": len(brands_df),              "icon": "💊"},
+        {"label": "Brand Names",   "value": kpis["unique_drugs"],         "icon": "💊"},
         {"label": "Drug Classes",  "value": len(classes_df),             "icon": "🏷️"},
     ])
     st.markdown("<br>", unsafe_allow_html=True)

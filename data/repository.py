@@ -181,6 +181,27 @@ def get_filter_options(indication: str | None, atc_class: str | None) -> dict:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def get_overview_kpis(filters: FilterState) -> dict:
+    # ── Fast path: no filters → read from pre-computed snapshot ─────────────
+    if not filters.has_any_filter():
+        snap_df = query_aact(
+            "SELECT * FROM public.overview_kpis_snapshot ORDER BY refreshed_at DESC LIMIT 1",
+            {},
+        )
+        if not snap_df.empty:
+            row = snap_df.iloc[0]
+            return {
+                "total_trials":        int(row["total_trials"]        or 0),
+                "active_trials":       int(row["active_trials"]       or 0),
+                "completed_trials":    int(row["completed_trials"]     or 0),
+                "trials_with_results": int(row["trials_with_results"]  or 0),
+                "median_enrollment":   float(row["median_enrollment"]  or 0),
+                "unique_sponsors":     int(row["unique_sponsors"]      or 0),
+                "unique_drugs":        int(row["unique_drugs"]         or 0),
+                "unique_conditions":   int(row["unique_conditions"]    or 0),
+                "trials_with_pros":    int(row["trials_with_pros"]     or 0),
+            }
+
+    # ── Filtered path: run live queries ──────────────────────────────────────
     qb = QueryBuilder(filters)
     scope_clause, params = qb.study_scope_clause("s")
 
@@ -2050,14 +2071,22 @@ def _get_pricing_brand_list(filters: FilterState) -> list[str]:
         return df.iloc[:, 0].dropna().tolist() if not df.empty else []
 
     if filters.indication_name:
+        from config.settings import (
+            BROWSE_CONDITIONS_TABLE,
+            BROWSE_CONDITIONS_MESH_TERM,
+            BROWSE_CONDITIONS_MESH_TYPE,
+            BROWSE_CONDITIONS_MESH_LIST,
+        )
         sql = f"""
-            SELECT DISTINCT brand_name
-            FROM {DRUG_INDICATIONS_TABLE}
-            WHERE LOWER({DRUGS_INDICATION_COL}) = LOWER(:ind)
-              AND brand_name IS NOT NULL
+            SELECT DISTINCT dt.brand_name
+            FROM public.drug_trials dt
+            JOIN {BROWSE_CONDITIONS_TABLE} bc ON bc.nct_id = dt.nct_id
+            WHERE bc.{BROWSE_CONDITIONS_MESH_TYPE} = '{BROWSE_CONDITIONS_MESH_LIST}'
+              AND bc.{BROWSE_CONDITIONS_MESH_TERM} = :ind
+              AND dt.brand_name IS NOT NULL
             ORDER BY 1
         """
-        df = query_drugs(sql, {"ind": filters.indication_name})
+        df = query_aact(sql, {"ind": filters.indication_name})
         return df.iloc[:, 0].dropna().tolist() if not df.empty else []
 
     return []
@@ -2075,7 +2104,8 @@ def _build_pricing_where(
     Returns (clause_string, params_dict).  The clause never starts with WHERE
     so callers can prepend it however they like.
     """
-    clauses: list[str] = []
+    # Exclude outlier rows where annual cost exceeds $1M
+    clauses: list[str] = ["total_cost_filled <= 1000000"]
     params: dict = {}
 
     if brands:
@@ -2086,7 +2116,7 @@ def _build_pricing_where(
         clauses.append("LOWER(TRIM(disease)) = :drug_indication")
         params["drug_indication"] = drug_indication.lower().strip()
 
-    return (" AND ".join(clauses) if clauses else "1=1", params)
+    return (" AND ".join(clauses), params)
 
 
 @st.cache_data(ttl=300, show_spinner=False)

@@ -128,7 +128,7 @@ def _extract_filters(question: str, catalog: dict) -> dict | None:
 
         client = openai.OpenAI(api_key=api_key)
         response = client.chat.completions.create(
-            model="gpt-4o",
+            model="gpt-4.1-mini",
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user",   "content": question},

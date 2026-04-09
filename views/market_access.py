@@ -12,11 +12,11 @@ import streamlit as st
 from components.page_header import page_header
 from components.metric_cards import kpi_row
 from components.filter_summary import filter_summary_bar
-from components.chart_tile import chart_tile
 from components.alerts import no_data_callout, filter_required_callout
 from utils.filters import FilterState
 from utils.formatting import fmt_number
 from data.repository import get_ma_kpis, get_ma_tier_grid, get_ma_req_grid
+from services.ai_summary import build_market_access_context, generate_summary, filter_hash
 
 
 # ── Ordered payer columns ─────────────────────────────────────────────────────
@@ -250,9 +250,10 @@ def render(filters: FilterState) -> None:
                 "each cell shows the formulary tier assigned by that payer. "
                 "**NC** = Not Covered / not on formulary."
             )
-            chart_tile(
+            st.plotly_chart(
                 _tier_chart(tier_df, year),
-                subtitle=f"{year} formulary · up to 50 drugs shown alphabetically",
+                use_container_width=True,
+                key="ma_tier_chart",
             )
 
     # ── Tab 2: PA / QL / SP checkbox grid ────────────────────────────────────
@@ -277,7 +278,78 @@ def render(filters: FilterState) -> None:
                 f"**✓** = payer applies **{req_type}** requirement for that drug. "
                 f"Empty cell = no {req_type} requirement."
             )
-            chart_tile(
+            st.plotly_chart(
                 _req_chart(req_df, req_type, year),
-                subtitle=f"{req_type} requirement presence by drug & payer — {year} formulary",
+                use_container_width=True,
+                key="ma_req_chart",
             )
+
+    # ── AI Summary button ──────────────────────────────────────────────────────
+    st.markdown("<br>", unsafe_allow_html=True)
+    _render_ai_summary(filters, kpis, tier_df, req_df, year)
+
+
+# ── AI Summary helpers ─────────────────────────────────────────────────────────
+
+def _render_ai_summary(filters, kpis, tier_df, req_df, year):
+    """Render the AI Summary button and result card for the Market Access page."""
+    _, btn_col = st.columns([4, 1])
+
+    with btn_col:
+        if filters.has_any_filter():
+            clicked = st.button(
+                "🤖 AI Summary",
+                use_container_width=True,
+                key="ma_ai_btn",
+                help="Generate an AI-powered analyst summary of the current market access data.",
+            )
+        else:
+            st.caption("Apply a filter to enable AI Summary.")
+            clicked = False
+
+    if clicked:
+        current_hash = filter_hash(filters)
+        if st.session_state.get("ma_summary_hash") != current_hash:
+            with st.spinner("Generating AI summary…"):
+                context = build_market_access_context(kpis, tier_df, req_df, year, filters)
+                summary = generate_summary(context, page_name="Market Access")
+            if summary:
+                st.session_state["ma_ai_summary"] = summary
+                st.session_state["ma_summary_hash"] = current_hash
+
+    # Clear cached summary if filters have changed
+    current_hash = filter_hash(filters)
+    if (
+        "ma_summary_hash" in st.session_state
+        and st.session_state["ma_summary_hash"] != current_hash
+    ):
+        st.session_state.pop("ma_ai_summary", None)
+        st.session_state.pop("ma_summary_hash", None)
+
+    if st.session_state.get("ma_ai_summary"):
+        st.markdown(
+            """
+            <div style="
+                background: white;
+                border: 1px solid #E5E7EB;
+                border-left: 4px solid #0F4C81;
+                border-radius: 12px;
+                padding: 24px 28px;
+                margin: 8px 0 24px 0;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+            ">
+            <div style="
+                font-size: 11px;
+                color: #6B7280;
+                font-weight: 600;
+                letter-spacing: 0.05em;
+                text-transform: uppercase;
+                margin-bottom: 16px;
+            ">
+                🤖 AI Generated &nbsp;·&nbsp; GPT-4o &nbsp;·&nbsp; Based on current filters
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.markdown(st.session_state["ma_ai_summary"])
+        st.markdown("</div>", unsafe_allow_html=True)
