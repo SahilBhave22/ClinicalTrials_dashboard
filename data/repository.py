@@ -1131,7 +1131,10 @@ def get_design_outcome_type_category_heatmap(filters: FilterState) -> pd.DataFra
     """Pivoted DataFrame: rows=outcome_type, cols=outcome_category, values=unique trial count."""
     qb = QueryBuilder(filters)
     scope_clause, params = qb.study_scope_clause("s")
+    ec_clause, ec_p = qb.endpoint_category_clause("dc")
+    params.update(ec_p)
     scope_where = f"AND {scope_clause}" if scope_clause else ""
+    ec_where = f"AND {ec_clause}" if ec_clause else ""
     sql = f"""
         SELECT
             COALESCE(do_.outcome_type, 'other') AS outcome_type,
@@ -1140,7 +1143,7 @@ def get_design_outcome_type_category_heatmap(filters: FilterState) -> pd.DataFra
         FROM ctgov.design_outcomes do_
         JOIN public.drug_trial_design_outcome_categories dc ON dc.nct_id = do_.nct_id
         JOIN ctgov.studies s ON s.nct_id = do_.nct_id
-        WHERE dc.outcome_category IS NOT NULL {scope_where}
+        WHERE dc.outcome_category IS NOT NULL {scope_where} {ec_where}
         GROUP BY 1, 2
     """
     df = query_aact(sql, params)
@@ -1156,7 +1159,10 @@ def get_design_outcome_type_category_heatmap(filters: FilterState) -> pd.DataFra
 def get_planned_pro_usage(filters: FilterState) -> pd.DataFrame:
     qb = QueryBuilder(filters)
     scope_clause, params = qb.study_scope_clause("s")
+    pi_clause, pi_p = qb.pro_instrument_clause("p")
+    params.update(pi_p)
     scope_where = f"AND {scope_clause}" if scope_clause else ""
+    pi_where = f"AND {pi_clause}" if pi_clause else ""
     sql = f"""
         SELECT
             p.instrument_name,
@@ -1164,7 +1170,7 @@ def get_planned_pro_usage(filters: FilterState) -> pd.DataFrame:
             s.phase
         FROM public.drug_trial_design_outcomes_pro p
         JOIN ctgov.studies s ON s.nct_id = p.nct_id
-        WHERE p.instrument_name IS NOT NULL {scope_where}
+        WHERE p.instrument_name IS NOT NULL {scope_where} {pi_where}
         GROUP BY 1, 3 ORDER BY 2 DESC LIMIT 30
     """
     return query_aact(sql, params)
@@ -1174,14 +1180,17 @@ def get_planned_pro_usage(filters: FilterState) -> pd.DataFrame:
 def get_top_design_endpoints(filters: FilterState, limit: int = 25) -> pd.DataFrame:
     qb = QueryBuilder(filters)
     scope_clause, params = qb.study_scope_clause("s")
+    ec_clause, ec_p = qb.endpoint_category_clause("dc")
+    params.update(ec_p)
     scope_where = f"AND {scope_clause}" if scope_clause else ""
+    ec_where = f"AND {ec_clause}" if ec_clause else ""
     sql = f"""
         SELECT
             dc.outcome_category,
             COUNT(DISTINCT dc.nct_id) AS trial_count
         FROM public.drug_trial_design_outcome_categories dc
         JOIN ctgov.studies s ON s.nct_id = dc.nct_id
-        WHERE dc.outcome_category IS NOT NULL {scope_where}
+        WHERE dc.outcome_category IS NOT NULL {scope_where} {ec_where}
         GROUP BY 1 ORDER BY 2 DESC LIMIT {limit}
     """
     return query_aact(sql, params)
@@ -1195,7 +1204,10 @@ def get_top_design_endpoints(filters: FilterState, limit: int = 25) -> pd.DataFr
 def get_reported_outcome_categories(filters: FilterState) -> pd.DataFrame:
     qb = QueryBuilder(filters)
     scope_clause, params = qb.study_scope_clause("s")
+    ec_clause, ec_p = qb.endpoint_category_clause("oc")
+    params.update(ec_p)
     scope_where = f"AND {scope_clause}" if scope_clause else ""
+    ec_where = f"AND {ec_clause}" if ec_clause else ""
     sql = f"""
         SELECT
             oc.outcome_category AS category,
@@ -1203,7 +1215,7 @@ def get_reported_outcome_categories(filters: FilterState) -> pd.DataFrame:
             COUNT(DISTINCT oc.nct_id)     AS trial_count
         FROM public.drug_trial_outcome_categories oc
         JOIN ctgov.studies s ON s.nct_id = oc.nct_id
-        WHERE oc.outcome_category IS NOT NULL {scope_where}
+        WHERE oc.outcome_category IS NOT NULL {scope_where} {ec_where}
         GROUP BY 1 ORDER BY 2 DESC
     """
     return query_aact(sql, params)
@@ -1232,7 +1244,10 @@ def get_outcome_type_category_heatmap(filters: FilterState) -> pd.DataFrame:
     """Pivoted DataFrame: rows=outcome_type, cols=outcome_category, values=unique trial count."""
     qb = QueryBuilder(filters)
     scope_clause, params = qb.study_scope_clause("s")
+    ec_clause, ec_p = qb.endpoint_category_clause("oc")
+    params.update(ec_p)
     scope_where = f"AND {scope_clause}" if scope_clause else ""
+    ec_where = f"AND {ec_clause}" if ec_clause else ""
     sql = f"""
         SELECT
             COALESCE(o.outcome_type, 'OTHER') AS outcome_type,
@@ -1242,7 +1257,7 @@ def get_outcome_type_category_heatmap(filters: FilterState) -> pd.DataFrame:
         JOIN public.drug_trial_outcome_categories oc
             ON oc.nct_id = o.nct_id AND oc.outcome_id = o.id
         JOIN ctgov.studies s ON s.nct_id = o.nct_id
-        WHERE oc.outcome_category IS NOT NULL {scope_where}
+        WHERE oc.outcome_category IS NOT NULL {scope_where} {ec_where}
         GROUP BY 1, 2
     """
     df = query_aact(sql, params)
@@ -1277,21 +1292,24 @@ def get_reported_pro_funnel(filters: FilterState) -> pd.DataFrame:
     """Planned vs reported PRO funnel."""
     qb = QueryBuilder(filters)
     scope_clause, params = qb.study_scope_clause("s")
+    pi_clause, pi_p = qb.pro_instrument_clause("p")
+    params.update(pi_p)
     scope_where = f"AND {scope_clause}" if scope_clause else ""
+    pi_where = f"AND {pi_clause}" if pi_clause else ""
     sql = f"""
         SELECT
             'Planned PROs'  AS stage,
             COUNT(DISTINCT p.nct_id) AS trial_count
         FROM public.drug_trial_design_outcomes_pro p
         JOIN ctgov.studies s ON s.nct_id = p.nct_id
-        WHERE TRUE {scope_where}
+        WHERE TRUE {scope_where} {pi_where}
         UNION ALL
         SELECT
             'Reported PROs' AS stage,
             COUNT(DISTINCT p.nct_id) AS trial_count
         FROM public.drug_trial_outcomes_pro p
         JOIN ctgov.studies s ON s.nct_id = p.nct_id
-        WHERE TRUE {scope_where}
+        WHERE TRUE {scope_where} {pi_where}
     """
     return query_aact(sql, params)
 
@@ -1406,7 +1424,12 @@ def get_score_by_drug(filters: FilterState, category: str,
 def get_pro_usage(filters: FilterState) -> pd.DataFrame:
     qb = QueryBuilder(filters)
     scope_clause, params = qb.study_scope_clause("s")
-    scope_where = f"AND {scope_clause}" if scope_clause else ""
+    pi_clause_p, pi_p = qb.pro_instrument_clause("p")
+    pi_clause_r, _    = qb.pro_instrument_clause("r")  # same params as pi_clause_p
+    params.update(pi_p)
+    scope_where  = f"AND {scope_clause}" if scope_clause else ""
+    pi_where_p   = f"AND {pi_clause_p}" if pi_clause_p else ""
+    pi_where_r   = f"AND {pi_clause_r}" if pi_clause_r else ""
     sql = f"""
         SELECT
             p.instrument_name,
@@ -1414,7 +1437,7 @@ def get_pro_usage(filters: FilterState) -> pd.DataFrame:
             0                         AS reported_count
         FROM public.drug_trial_design_outcomes_pro p
         JOIN ctgov.studies s ON s.nct_id = p.nct_id
-        WHERE p.instrument_name IS NOT NULL {scope_where}
+        WHERE p.instrument_name IS NOT NULL {scope_where} {pi_where_p}
         GROUP BY 1
         UNION ALL
         SELECT
@@ -1423,7 +1446,7 @@ def get_pro_usage(filters: FilterState) -> pd.DataFrame:
             COUNT(DISTINCT r.nct_id)  AS reported_count
         FROM public.drug_trial_outcomes_pro r
         JOIN ctgov.studies s ON s.nct_id = r.nct_id
-        WHERE r.instrument_name IS NOT NULL {scope_where}
+        WHERE r.instrument_name IS NOT NULL {scope_where} {pi_where_r}
         GROUP BY 1
     """
     return query_aact(sql, params)
@@ -1433,7 +1456,10 @@ def get_pro_usage(filters: FilterState) -> pd.DataFrame:
 def get_pro_by_sponsor(filters: FilterState, limit: int = 15) -> pd.DataFrame:
     qb = QueryBuilder(filters)
     scope_clause, params = qb.study_scope_clause("s")
+    pi_clause, pi_p = qb.pro_instrument_clause("p")
+    params.update(pi_p)
     scope_where = f"AND {scope_clause}" if scope_clause else ""
+    pi_where = f"AND {pi_clause}" if pi_clause else ""
     sql = f"""
         WITH sponsor_totals AS (
             SELECT sp.name AS sponsor,
@@ -1442,7 +1468,7 @@ def get_pro_by_sponsor(filters: FilterState, limit: int = 15) -> pd.DataFrame:
             JOIN ctgov.studies s ON s.nct_id = p.nct_id
             JOIN ctgov.sponsors sp ON sp.nct_id = s.nct_id
                    AND sp.lead_or_collaborator = 'lead'
-            WHERE p.instrument_name IS NOT NULL {scope_where}
+            WHERE p.instrument_name IS NOT NULL {scope_where} {pi_where}
             GROUP BY 1
         )
         SELECT
@@ -1455,7 +1481,7 @@ def get_pro_by_sponsor(filters: FilterState, limit: int = 15) -> pd.DataFrame:
         JOIN ctgov.sponsors sp ON sp.nct_id = s.nct_id
                AND sp.lead_or_collaborator = 'lead'
         JOIN sponsor_totals st ON st.sponsor = sp.name
-        WHERE p.instrument_name IS NOT NULL {scope_where}
+        WHERE p.instrument_name IS NOT NULL {scope_where} {pi_where}
         GROUP BY 1, 2, st.sponsor_total
         ORDER BY 4 DESC, 3 DESC LIMIT {limit * 5}
     """
@@ -1466,14 +1492,17 @@ def get_pro_by_sponsor(filters: FilterState, limit: int = 15) -> pd.DataFrame:
 def get_pro_by_phase(filters: FilterState) -> pd.DataFrame:
     qb = QueryBuilder(filters)
     scope_clause, params = qb.study_scope_clause("s")
+    pi_clause, pi_p = qb.pro_instrument_clause("p")
+    params.update(pi_p)
     scope_where = f"AND {scope_clause}" if scope_clause else ""
+    pi_where = f"AND {pi_clause}" if pi_clause else ""
     sql = f"""
         SELECT
             COALESCE(s.phase,'N/A') AS phase,
             COUNT(DISTINCT p.nct_id) AS pro_trials
         FROM public.drug_trial_design_outcomes_pro p
         JOIN ctgov.studies s ON s.nct_id = p.nct_id
-        WHERE TRUE {scope_where}
+        WHERE TRUE {scope_where} {pi_where}
         GROUP BY 1 ORDER BY 2 DESC
     """
     return query_aact(sql, params)
@@ -1487,7 +1516,13 @@ def get_pro_by_phase(filters: FilterState) -> pd.DataFrame:
 def get_pro_domains(filters: FilterState) -> pd.DataFrame:
     qb = QueryBuilder(filters)
     scope_clause, params = qb.study_scope_clause("s")
+    pi_clause, pi_p = qb.pro_instrument_clause("d")
+    pd_clause, pd_p = qb.pro_domain_clause("d")
+    params.update(pi_p)
+    params.update(pd_p)
     scope_where = f"AND {scope_clause}" if scope_clause else ""
+    pi_where = f"AND {pi_clause}" if pi_clause else ""
+    pd_where = f"AND {pd_clause}" if pd_clause else ""
     sql = f"""
         SELECT
             d.criteria         AS domain,
@@ -1496,7 +1531,7 @@ def get_pro_domains(filters: FilterState) -> pd.DataFrame:
             COUNT(DISTINCT d.brand_name) AS drug_count
         FROM public.domain_score_match d
         JOIN ctgov.studies s ON s.nct_id = d.nct_id
-        WHERE d.criteria IS NOT NULL {scope_where}
+        WHERE d.criteria IS NOT NULL {scope_where} {pi_where} {pd_where}
         GROUP BY 1, 2
         ORDER BY 3 DESC
         LIMIT 200
@@ -1508,7 +1543,13 @@ def get_pro_domains(filters: FilterState) -> pd.DataFrame:
 def get_domain_instrument_heatmap(filters: FilterState) -> pd.DataFrame:
     qb = QueryBuilder(filters)
     scope_clause, params = qb.study_scope_clause("s")
+    pi_clause, pi_p = qb.pro_instrument_clause("d")
+    pd_clause, pd_p = qb.pro_domain_clause("d")
+    params.update(pi_p)
+    params.update(pd_p)
     scope_where = f"AND {scope_clause}" if scope_clause else ""
+    pi_where = f"AND {pi_clause}" if pi_clause else ""
+    pd_where = f"AND {pd_clause}" if pd_clause else ""
     sql = f"""
         WITH top_instruments AS (
             SELECT instrument_name, COUNT(DISTINCT nct_id) AS cnt
@@ -1529,7 +1570,7 @@ def get_domain_instrument_heatmap(filters: FilterState) -> pd.DataFrame:
         JOIN ctgov.studies s ON s.nct_id = d.nct_id
         JOIN top_instruments ti ON ti.instrument_name = d.instrument_name
         JOIN top_domains td ON td.criteria = d.criteria
-        WHERE d.criteria IS NOT NULL {scope_where}
+        WHERE d.criteria IS NOT NULL {scope_where} {pi_where} {pd_where}
         GROUP BY 1, 2
     """
     return query_aact(sql, params)
@@ -1539,7 +1580,13 @@ def get_domain_instrument_heatmap(filters: FilterState) -> pd.DataFrame:
 def get_domain_by_drug(filters: FilterState) -> pd.DataFrame:
     qb = QueryBuilder(filters)
     scope_clause, params = qb.study_scope_clause("s")
+    pi_clause, pi_p = qb.pro_instrument_clause("d")
+    pd_clause, pd_p = qb.pro_domain_clause("d")
+    params.update(pi_p)
+    params.update(pd_p)
     scope_where = f"AND {scope_clause}" if scope_clause else ""
+    pi_where = f"AND {pi_clause}" if pi_clause else ""
+    pd_where = f"AND {pd_clause}" if pd_clause else ""
     sql = f"""
         SELECT
             d.brand_name,
@@ -1548,7 +1595,7 @@ def get_domain_by_drug(filters: FilterState) -> pd.DataFrame:
         FROM public.domain_score_match d
         JOIN ctgov.studies s ON s.nct_id = d.nct_id
         WHERE d.criteria IS NOT NULL
-          AND d.brand_name IS NOT NULL {scope_where}
+          AND d.brand_name IS NOT NULL {scope_where} {pi_where} {pd_where}
         GROUP BY 1, 2
         ORDER BY 3 DESC LIMIT 200
     """
@@ -2145,25 +2192,25 @@ def get_pricing_kpis(filters: FilterState) -> dict:
     row = df.iloc[0]
     latest_qtr = row["latest_quarter"]
 
-    # Total cost for latest quarter
+    # Average cost per drug for latest quarter
     sql_latest = f"""
-        SELECT COALESCE(SUM(total_cost_filled), 0) AS total_cost
+        SELECT COALESCE(AVG(total_cost_filled), 0) AS avg_cost
         FROM {ANNUAL_PRICING_TABLE}
         WHERE {where}
           AND quarter_start = :latest_qtr
     """
     p_latest = {**params, "latest_qtr": latest_qtr}
     df_latest = query_pricing(sql_latest, p_latest)
-    latest_cost = float(df_latest.iloc[0]["total_cost"]) if not df_latest.empty else None
+    latest_avg_cost = float(df_latest.iloc[0]["avg_cost"]) if not df_latest.empty else None
 
-    # Total cost one year prior (for YoY delta)
+    # Average cost one year prior (for YoY delta)
     price_change_pct = None
     if latest_qtr is not None:
         try:
             import datetime
             prior_qtr = latest_qtr - datetime.timedelta(days=365)
             sql_prior = f"""
-                SELECT COALESCE(SUM(total_cost_filled), 0) AS total_cost
+                SELECT COALESCE(AVG(total_cost_filled), 0) AS avg_cost
                 FROM {ANNUAL_PRICING_TABLE}
                 WHERE {where}
                   AND quarter_start = :prior_qtr
@@ -2171,19 +2218,19 @@ def get_pricing_kpis(filters: FilterState) -> dict:
             p_prior = {**params, "prior_qtr": prior_qtr}
             df_prior = query_pricing(sql_prior, p_prior)
             if not df_prior.empty:
-                prior_cost = float(df_prior.iloc[0]["total_cost"])
-                if prior_cost and prior_cost != 0:
-                    price_change_pct = ((latest_cost - prior_cost) / prior_cost) * 100
+                prior_avg_cost = float(df_prior.iloc[0]["avg_cost"])
+                if prior_avg_cost and prior_avg_cost != 0:
+                    price_change_pct = ((latest_avg_cost - prior_avg_cost) / prior_avg_cost) * 100
         except Exception:
             pass
 
     return {
-        "unique_drugs":      int(row["unique_drugs"]),
-        "dosage_forms":      int(row["dosage_forms"]),
-        "unique_diseases":   int(row["unique_diseases"]),
-        "latest_total_cost": latest_cost,
-        "latest_quarter":    str(latest_qtr)[:10] if latest_qtr else None,
-        "price_change_pct":  price_change_pct,
+        "unique_drugs":       int(row["unique_drugs"]),
+        "dosage_forms":       int(row["dosage_forms"]),
+        "unique_diseases":    int(row["unique_diseases"]),
+        "latest_avg_cost":    latest_avg_cost,
+        "latest_quarter":     str(latest_qtr)[:10] if latest_qtr else None,
+        "price_change_pct":   price_change_pct,
     }
 
 
@@ -2262,7 +2309,7 @@ def get_annual_cost_by_disease(filters: FilterState) -> pd.DataFrame:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def get_wac_price_history(filters: FilterState) -> pd.DataFrame:
-    """WAC unit price history from historical_pricing, averaged per brand per date."""
+    """WAC unit price history from historical_pricing — one row per NDC per effective date."""
     brands = _get_pricing_brand_list(filters)
     if brands:
         brand_clause = "AND LOWER(brand_name) = ANY(:brands)"
@@ -2274,13 +2321,13 @@ def get_wac_price_history(filters: FilterState) -> pd.DataFrame:
     sql = f"""
         SELECT
             brand_name,
+            ndc,
             wac_unit_effective_date,
-            AVG(wac_unit_price) AS avg_wac_price
+            wac_unit_price
         FROM {HISTORICAL_PRICING_TABLE}
         WHERE wac_unit_price IS NOT NULL
           {brand_clause}
-        GROUP BY brand_name, wac_unit_effective_date
-        ORDER BY wac_unit_effective_date
+        ORDER BY wac_unit_effective_date, brand_name
     """
     return query_pricing(sql, params)
 

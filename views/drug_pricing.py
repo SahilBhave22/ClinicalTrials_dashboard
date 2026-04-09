@@ -128,25 +128,32 @@ def _wac_line_chart(df) -> object:
                                           font=dict(size=14, color="#0F4C81"))})
         return fig
 
-    n_brands = df["brand_name"].nunique()
-    top_margin = 90 if n_brands > 5 else 65
-
     fig = px.line(
         df,
         x="wac_unit_effective_date",
-        y="avg_wac_price",
+        y="wac_unit_price",
         color="brand_name",
         color_discrete_sequence=CATEGORICAL_PALETTE,
         labels={
             "wac_unit_effective_date": "Effective Date",
-            "avg_wac_price":           "Avg WAC Unit Price ($)",
+            "wac_unit_price":          "WAC Unit Price ($)",
             "brand_name":              "Brand",
+            "ndc":                     "NDC",
         },
+        hover_data=["ndc"],
     )
     fig.update_traces(line_width=2, mode="lines+markers", marker_size=4)
     _apply_layout(fig, {
-        "margin": dict(l=40, r=20, t=top_margin, b=40),
-        "title":  dict(text="WAC Unit Price History", font=dict(size=14, color="#0F4C81")),
+        "margin": dict(l=40, r=160, t=50, b=40),
+        "legend": dict(
+            orientation="v",
+            yanchor="top",  y=1,
+            xanchor="left", x=1.02,
+            font=dict(size=10),
+            tracegroupgap=2,
+            itemsizing="constant",
+        ),
+        "title": dict(text="WAC Unit Price History", font=dict(size=14, color="#0F4C81")),
     })
     fig.update_xaxes(**_XAXIS)
     fig.update_yaxes(**_YAXIS, tickprefix="$")
@@ -181,8 +188,8 @@ def render(filters: FilterState) -> None:
         {"label": "Dosage Forms",      "value": fmt_number(kpis["dosage_forms"]),    "icon": "🧪"},
         {"label": "Unique Diseases",   "value": fmt_number(kpis["unique_diseases"]), "icon": "🔬"},
         {
-            "label": f"Total Annual Cost ({latest_qtr_label})",
-            "value": _fmt_currency(kpis["latest_total_cost"]),
+            "label": f"Avg Annual Cost ({latest_qtr_label})",
+            "value": _fmt_currency(kpis["latest_avg_cost"]),
             "icon": "💰",
             **({"delta": pct_delta} if pct_delta else {}),
         },

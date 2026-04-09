@@ -329,6 +329,15 @@ class QueryBuilder:
         )
         return clause, params
 
+    def pro_domain_clause(self, alias: str = "d") -> Tuple[str, dict]:
+        if not self.filters.pro_domain:
+            return "", {}
+        params: dict = {}
+        clause = _list_clause(
+            f"{alias}.criteria", self.filters.pro_domain, params, "pd"
+        )
+        return clause, params
+
     def ae_clause(self, alias: str = "re") -> Tuple[str, dict]:
         parts: list[str] = []
         params: dict = {}
