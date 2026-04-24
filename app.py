@@ -31,6 +31,8 @@ st.set_page_config(
 from utils.preloader import start_background_preload
 start_background_preload()
 
+from utils.auth import render_login_form, render_user_badge, get_allowed_tabs, get_current_user
+
 # ── Page registry: (tab label, module path) ───────────────────────────────────
 PAGE_MAP = [
     ("🏠 Home",          "views.home"),
@@ -248,94 +250,20 @@ h1, h2, h3 { color: #0F4C81; }
 """, unsafe_allow_html=True)
 
 # ── Auth gate ─────────────────────────────────────────────────────────────────
-_USERNAME = "admin"
-_PASSWORD = "password#1234"
-
-_login_slot = st.empty()
-
-if not st.session_state.get("authenticated", False):
-    with _login_slot.container():
-        st.markdown(f"""
-        <style>
-        section[data-testid="stSidebar"] {{ display: none !important; }}
-        .block-container {{ padding-top: 0 !important; }}
-
-        /* Card: style the middle column's vertical block */
-        div[data-testid="stMainBlockContainer"]
-            div[data-testid="stHorizontalBlock"]
-            > div[data-testid="stColumn"]:nth-child(2)
-            > div[data-testid="stVerticalBlock"] {{
-                background: #FFFFFF;
-                border: 1px solid #E5E7EB;
-                border-radius: 16px;
-                box-shadow: 0 4px 32px rgba(15,76,129,0.12);
-                padding: 40px 36px 36px !important;
-                margin-top: 80px;
-        }}
-
-        /* Sign in button */
-        div[data-testid="stMainBlockContainer"] .stButton > button {{
-            background: #0F4C81 !important;
-            color: white !important;
-            border: none !important;
-            border-radius: 8px !important;
-            font-weight: 600 !important;
-            font-size: 15px !important;
-            height: 44px !important;
-            letter-spacing: 0.01em;
-            margin-top: 4px;
-        }}
-        div[data-testid="stMainBlockContainer"] .stButton > button:hover {{
-            background: #0D3F6E !important;
-        }}
-        </style>
-
-        <div style="height:0"></div>
-        """, unsafe_allow_html=True)
-
-        _, col, _ = st.columns([1, 1.4, 1])
-        with col:
-            st.markdown(f"""
-            <div style="text-align:center; margin-bottom:24px;">
-                <img src="data:image/png;base64,{_LOGO_B64}"
-                     style="height:52px; margin-bottom:18px; display:block; margin-left:auto; margin-right:auto;">
-                <div style="font-size:21px; font-weight:700; color:#0F4C81; margin-bottom:5px; letter-spacing:-0.01em;">
-                    Clinical Trials Intelligence Platform
-                </div>
-                <div style="font-size:14px; color:#6B7280;">
-                    Sign in to continue
-                </div>
-            </div>
-            <hr style="border:none; border-top:1px solid #E5E7EB; margin:0 0 20px 0;">
-            """, unsafe_allow_html=True)
-
-            username = st.text_input("Username", placeholder="Enter your username")
-            password = st.text_input("Password", placeholder="Enter your password", type="password")
-
-            st.markdown("<div style='height:4px'></div>", unsafe_allow_html=True)
-
-            if st.button("Sign in", use_container_width=True):
-                if username == _USERNAME and password == _PASSWORD:
-                    st.session_state["authenticated"] = True
-                    st.session_state.pop("_login_attempted", None)
-                    st.rerun()
-                else:
-                    st.session_state["_login_attempted"] = True
-                    st.rerun()
-
-            if st.session_state.get("_login_attempted", False):
-                st.error("Incorrect username or password.")
-
-    st.stop()
+render_login_form(logo_b64=_LOGO_B64)
 
 # ── Sidebar filters ───────────────────────────────────────────────────────────
 from components.filters import render_sidebar
+render_user_badge()
 filters = render_sidebar()
 
 # ── Tab navigation + routing ──────────────────────────────────────────────────
-tabs = st.tabs([label for label, _ in PAGE_MAP])
+_username, _ = get_current_user()
+visible_pages = get_allowed_tabs(_username, PAGE_MAP)
 
-for tab, (_, module_path) in zip(tabs, PAGE_MAP):
+tabs = st.tabs([label for label, _ in visible_pages])
+
+for tab, (_, module_path) in zip(tabs, visible_pages):
     with tab:
         try:
             module = importlib.import_module(module_path)

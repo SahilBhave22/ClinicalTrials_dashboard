@@ -180,13 +180,32 @@ def get_filter_options(indication: str | None, atc_class: str | None) -> dict:
 # ════════════════════════════════════════════════════════════════════════════
 
 @st.cache_data(ttl=300, show_spinner=False)
+def _build_scope_key(filters: FilterState) -> str:
+    """Deterministic snapshot key matching scripts/generate_snapshot_sql.py logic."""
+    parts = []
+    if filters.allowed_indications is not None:
+        parts.append("ind:" + "|".join(sorted(filters.allowed_indications)))
+    if filters.allowed_atc_classes is not None:
+        parts.append("atc:" + "|".join(sorted(filters.allowed_atc_classes)))
+    return "__".join(parts) if parts else "global"
+
+
 def get_overview_kpis(filters: FilterState) -> dict:
-    # ── Fast path: no filters → read from pre-computed snapshot ─────────────
+    # ── Fast path: no sidebar filters → read from pre-computed snapshot ──────
     if not filters.has_any_filter():
+        scope_key = _build_scope_key(filters)
         snap_df = query_aact(
-            "SELECT * FROM public.overview_kpis_snapshot ORDER BY refreshed_at DESC LIMIT 1",
-            {},
+            "SELECT * FROM public.overview_kpis_snapshot "
+            "WHERE scope_key = :scope_key ORDER BY refreshed_at DESC LIMIT 1",
+            {"scope_key": scope_key},
         )
+        if snap_df.empty and scope_key != "global":
+            # Snapshot not yet generated for this scope — fall back to global row
+            snap_df = query_aact(
+                "SELECT * FROM public.overview_kpis_snapshot "
+                "WHERE scope_key = 'global' ORDER BY refreshed_at DESC LIMIT 1",
+                {},
+            )
         if not snap_df.empty:
             row = snap_df.iloc[0]
             return {

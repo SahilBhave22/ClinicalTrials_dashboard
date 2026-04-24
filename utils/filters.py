@@ -32,6 +32,10 @@ class FilterState:
     enrollment_min:     Optional[int] = None
     enrollment_max:     Optional[int] = None
 
+    # ── Per-user data restrictions (set once at login, never cleared by sidebar) ─
+    allowed_indications: Optional[List[str]] = None   # None = no restriction
+    allowed_atc_classes: Optional[List[str]] = None   # None = no restriction
+
     # ── Derived / cached (resolved at query time) ─────────────────────────────
     _resolved_brand_names: List[str] = field(default_factory=list)
 
@@ -95,10 +99,20 @@ SESSION_KEY = "filter_state"
 
 
 def get_filters() -> FilterState:
-    """Retrieve current FilterState from session_state (create default if absent)."""
+    """Retrieve current FilterState from session_state (create default if absent).
+
+    If a user_access config is in session state, the restriction fields on the
+    FilterState are always synced from it so they can never be cleared by accident.
+    """
     if SESSION_KEY not in st.session_state:
         st.session_state[SESSION_KEY] = FilterState()
-    return st.session_state[SESSION_KEY]
+    fs: FilterState = st.session_state[SESSION_KEY]
+    # Re-sync user restrictions from session state on every access
+    ua = st.session_state.get("user_access", {})
+    fs.allowed_indications = ua.get("disease_areas")
+    fs.allowed_atc_classes = ua.get("drug_classes")
+
+    return fs
 
 
 def set_filters(fs: FilterState) -> None:

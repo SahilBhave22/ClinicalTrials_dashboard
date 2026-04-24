@@ -98,6 +98,9 @@ def _do_clear_filter(clear_ind: bool = False, clear_atc: bool = False) -> None:
     Clear one or both global filters, reset all downstream filters,
     and wipe the corresponding widget session_state keys so widgets
     re-render with empty values on the next run.
+
+    For users with per-user restrictions, global filters are reset to the first
+    allowed value rather than cleared to None.
     """
     fs = get_filters()
 
@@ -225,16 +228,19 @@ def render_sidebar() -> FilterState:
         st.markdown("#### 🌐 Global Filters")
         st.caption("Drug class and MeSH condition filters")
 
-        indication_opts = [""] + _get_indication_list()
-        atc_opts        = [""] + _get_atc_class_list()
+        # Per-user restrictions from session state
+        _ua = st.session_state.get("user_access", {})
+        _allowed_ind = _ua.get("disease_areas")   # None = unrestricted, list = restricted
+        _allowed_atc = _ua.get("drug_classes")     # None = unrestricted, list = restricted
 
-        # Seed session state from FilterState only when the key is absent.
-        # This avoids the "default value + session state" conflict warning
-        # while still restoring the correct value after a rerun.
+        # ── Indication filter ────────────────────────────────────────────────
+        if _allowed_ind is not None:
+            # Restricted — show only allowed options with an empty default
+            indication_opts = [""] + _allowed_ind
+        else:
+            indication_opts = [""] + _get_indication_list()
         if "sb_indication" not in st.session_state:
             st.session_state["sb_indication"] = fs.indication_name or ""
-        if "sb_atc" not in st.session_state:
-            st.session_state["sb_atc"] = fs.atc_class_name or ""
 
         sel_ind = st.selectbox(
             "Condition (Disease Area)",
@@ -243,6 +249,15 @@ def render_sidebar() -> FilterState:
             key="sb_indication",
             on_change=_on_global_filter_change,
         )
+
+        # ── ATC / Drug Class filter ──────────────────────────────────────────
+        if _allowed_atc is not None:
+            # Restricted — show only allowed options with an empty default
+            atc_opts = [""] + _allowed_atc
+        else:
+            atc_opts = [""] + _get_atc_class_list()
+        if "sb_atc" not in st.session_state:
+            st.session_state["sb_atc"] = fs.atc_class_name or ""
 
         sel_atc = st.selectbox(
             "Drug Class (ATC)",

@@ -45,6 +45,31 @@ def _list_clause(col: str, values: List[str], params: dict, prefix: str) -> str:
 # ── Drugs DB helpers ──────────────────────────────────────────────────────────
 
 @st.cache_data(ttl=600, show_spinner=False)
+def resolve_brand_names_for_classes(atc_classes: tuple) -> List[str]:
+    """
+    Resolve brand_names matching ANY of the given ATC classes (for per-user restrictions).
+    atc_classes must be a tuple (hashable) for caching.
+    Returns [] if the tuple is empty.
+    """
+    if not atc_classes:
+        return []
+
+    from data.db import query_drugs  # local import to avoid circular
+
+    placeholders = ", ".join(f":atc_{i}" for i in range(len(atc_classes)))
+    params = {f"atc_{i}": c for i, c in enumerate(atc_classes)}
+    sql = f"""
+        SELECT DISTINCT {DRUGS_BRAND_COL} AS brand_name
+        FROM {DRUG_CLASSES_TABLE}
+        WHERE {DRUGS_ATC_COL} IN ({placeholders})
+          AND {DRUGS_BRAND_COL} IS NOT NULL
+        LIMIT 2000
+    """
+    df = query_drugs(sql, params)
+    return df["brand_name"].dropna().tolist() if not df.empty else []
+
+
+@st.cache_data(ttl=600, show_spinner=False)
 def resolve_brand_names(atc_class: Optional[str]) -> List[str]:
     """
     Query drugs_db to get brand_names matching the atc_class filter.
@@ -154,6 +179,20 @@ class QueryBuilder:
         return self._brand_names
 
     @property
+    def allowed_atc_brand_names(self) -> Optional[List[str]]:
+        """
+        Brand names allowed by the user's per-user atc_classes restriction.
+        Returns None if the user has no restriction (allowed_atc_classes is None).
+        Returns [] if the user's allowed_atc_classes list is empty (deny all).
+        """
+        classes = self.filters.allowed_atc_classes
+        if classes is None:
+            return None
+        if not classes:
+            return []
+        return resolve_brand_names_for_classes(tuple(sorted(classes)))
+
+    @property
     def nct_ids(self) -> List[str]:
         if self._nct_ids is None:
             if not self.brand_names and not self.filters.has_global_filter():
@@ -182,47 +221,84 @@ class QueryBuilder:
         It is applied as a JOIN on drug_trials, NOT via brand-name resolution.
         ATC class (atc_class_name) still resolves to brand_names via drug_classes.
 
-        Scenarios:
-        - No global filter        → all drug_trials
-        - indication only         → drug_trials JOIN browse_conditions mesh-list
-        - atc_class only          → drug_trials WHERE brand_name IN (atc brands)
-        - both                    → drug_trials JOIN browse_conditions AND brand IN (atc brands)
-        - atc set but no brands   → empty set (atc class has no matching drugs)
-        """
-        indication  = self.filters.indication_name   # browse_conditions mesh_term
-        brand_names = self.brand_names               # from atc_class only
+        Per-user restrictions (allowed_indications, allowed_atc_classes) from FilterState
+        are always enforced in addition to sidebar selections.
 
-        if not self.filters.has_global_filter():
-            # No global filter — scope to all drug_trials
+        Scenarios:
+        - No global filter, no user restrictions → all drug_trials
+        - indication only                        → drug_trials JOIN browse_conditions mesh-list
+        - atc_class only                         → drug_trials WHERE brand_name IN (atc brands)
+        - both                                   → JOIN browse_conditions AND brand IN (atc brands)
+        - atc set but no brands                  → empty set
+        - user has allowed_indications           → always joined + filtered to those indications
+        - user has allowed_atc_classes           → brand_names further intersected with allowed brands
+        """
+        indication         = self.filters.indication_name
+        brand_names        = self.brand_names            # from sidebar atc_class_name
+        allowed_indications = self.filters.allowed_indications  # None or list
+        allowed_atc_brands  = self.allowed_atc_brand_names      # None or list
+
+        # Per-user ATC restriction → empty allowed brands means deny all
+        if allowed_atc_brands is not None and not allowed_atc_brands:
+            return f"{alias}.nct_id IN (SELECT NULL WHERE FALSE)", {}
+
+        # ATC class sidebar set but resolved to zero brands → empty result
+        if self.filters.atc_class_name and not brand_names:
+            return f"{alias}.nct_id IN (SELECT NULL WHERE FALSE)", {}
+
+        has_any_scope = (
+            self.filters.has_global_filter()
+            or allowed_indications is not None
+            or allowed_atc_brands is not None
+        )
+        if not has_any_scope:
             return (
                 f"{alias}.nct_id IN (SELECT DISTINCT nct_id FROM public.drug_trials)",
                 {},
             )
 
-        # ATC class is set but resolved to zero brands → empty result
-        if self.filters.atc_class_name and not brand_names:
-            return f"{alias}.nct_id IN (SELECT NULL WHERE FALSE)", {}
-
         params: dict = {}
         where_parts: list[str] = []
+
+        # ── Brand restriction (sidebar ATC selection intersected with user allowlist) ─
+        effective_brands: Optional[List[str]] = None
+        if brand_names and allowed_atc_brands is not None:
+            # Intersection: user can only see brands within their allowlist
+            effective_brands = [b for b in brand_names if b in set(allowed_atc_brands)]
+            if not effective_brands:
+                return f"{alias}.nct_id IN (SELECT NULL WHERE FALSE)", {}
+        elif brand_names:
+            effective_brands = brand_names
+        elif allowed_atc_brands is not None:
+            effective_brands = allowed_atc_brands
+
+        if effective_brands:
+            where_parts.append(_list_clause("dt.brand_name", effective_brands, params, "bn"))
+
+        # ── Indication JOIN (needed when either sidebar indication or user restriction is set) ─
+        needs_bc_join = indication or allowed_indications is not None
         join_clause = ""
-
-        # ATC-derived brand restriction
-        if brand_names:
-            bn_frag = _list_clause("dt.brand_name", brand_names, params, "bn")
-            where_parts.append(bn_frag)
-
-        # Indication restriction via browse_conditions
-        if indication:
-            join_clause = (
-                f"JOIN {BROWSE_CONDITIONS_TABLE} bc ON bc.nct_id = dt.nct_id"
+        if needs_bc_join:
+            join_clause = f"JOIN {BROWSE_CONDITIONS_TABLE} bc ON bc.nct_id = dt.nct_id"
+            where_parts.append(
+                f"bc.{BROWSE_CONDITIONS_MESH_TYPE} = '{BROWSE_CONDITIONS_MESH_LIST}'"
             )
-            where_parts.append(f"bc.{BROWSE_CONDITIONS_MESH_TYPE} = '{BROWSE_CONDITIONS_MESH_LIST}'")
-            where_parts.append(f"bc.{BROWSE_CONDITIONS_MESH_TERM} = :bc_indication")
-            params["bc_indication"] = indication
+            # Sidebar selection (single value)
+            if indication:
+                where_parts.append(f"bc.{BROWSE_CONDITIONS_MESH_TERM} = :bc_indication")
+                params["bc_indication"] = indication
+            # Per-user allowlist (enforced regardless of sidebar)
+            if allowed_indications is not None:
+                where_parts.append(
+                    _list_clause(
+                        f"bc.{BROWSE_CONDITIONS_MESH_TERM}",
+                        allowed_indications,
+                        params,
+                        "ua_ind",
+                    )
+                )
 
         where_sql = "WHERE " + " AND ".join(where_parts) if where_parts else ""
-
         clause = f"""
             {alias}.nct_id IN (
                 SELECT DISTINCT dt.nct_id
@@ -521,28 +597,55 @@ class QueryBuilder:
         join_parts: list[str] = []
 
         # ── Global scope: drug_trials (limits to known drug trials) ───────────
-        indication = self.filters.indication_name
-        brand_names = self.brand_names
+        indication          = self.filters.indication_name
+        brand_names         = self.brand_names
+        allowed_indications = self.filters.allowed_indications
+        allowed_atc_brands  = self.allowed_atc_brand_names
+
+        # Per-user ATC restriction → empty allowed brands means deny all
+        if allowed_atc_brands is not None and not allowed_atc_brands:
+            return "WITH scope_nct AS (SELECT nct_id FROM ctgov.studies WHERE FALSE)", {}
 
         # ATC class set but resolved to zero brands → empty result set
         if self.filters.atc_class_name and not brand_names:
             return "WITH scope_nct AS (SELECT nct_id FROM ctgov.studies WHERE FALSE)", {}
 
-        # ATC → brand filter on drug_trials
-        if brand_names:
-            bn_frag = _list_clause("dt.brand_name", brand_names, params, "bn")
+        # ── Brand restriction (sidebar ATC intersected with user allowlist) ────
+        effective_brands: Optional[List[str]] = None
+        if brand_names and allowed_atc_brands is not None:
+            effective_brands = [b for b in brand_names if b in set(allowed_atc_brands)]
+            if not effective_brands:
+                return "WITH scope_nct AS (SELECT nct_id FROM ctgov.studies WHERE FALSE)", {}
+        elif brand_names:
+            effective_brands = brand_names
+        elif allowed_atc_brands is not None:
+            effective_brands = allowed_atc_brands
+
+        if effective_brands:
+            bn_frag = _list_clause("dt.brand_name", effective_brands, params, "bn")
             where_parts.append(bn_frag)
 
-        # Indication → browse_conditions JOIN
-        if indication:
+        # ── Indication (sidebar + per-user allowlist) via browse_conditions JOIN ─
+        needs_bc_join = indication or allowed_indications is not None
+        if needs_bc_join:
             join_parts.append(
                 f"JOIN {BROWSE_CONDITIONS_TABLE} bc ON bc.nct_id = dt.nct_id"
             )
             where_parts.append(
                 f"bc.{BROWSE_CONDITIONS_MESH_TYPE} = '{BROWSE_CONDITIONS_MESH_LIST}'"
             )
-            where_parts.append(f"bc.{BROWSE_CONDITIONS_MESH_TERM} = :bc_indication")
-            params["bc_indication"] = indication
+            if indication:
+                where_parts.append(f"bc.{BROWSE_CONDITIONS_MESH_TERM} = :bc_indication")
+                params["bc_indication"] = indication
+            if allowed_indications is not None:
+                where_parts.append(
+                    _list_clause(
+                        f"bc.{BROWSE_CONDITIONS_MESH_TERM}",
+                        allowed_indications,
+                        params,
+                        "ua_ind",
+                    )
+                )
 
         # Direct brand-name sidebar filter (further narrows drug_trials)
         if self.filters.brand_name:
