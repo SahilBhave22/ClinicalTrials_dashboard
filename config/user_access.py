@@ -5,7 +5,10 @@ Edit USER_ACCESS to control what each user can see and access.
 
 Keys per user:
   display_name  : str — shown in the sidebar user badge
-  tabs          : list of tab labels (must match PAGE_MAP labels in app.py), or None for all tabs
+  tabs          : list of tab names (plain text, no emojis needed), or None for all tabs
+                  Valid tab names: Home, Ask the Data, Pipeline, Drug Detail, Drug Pricing,
+                  Market Access, Sponsors, Trial Design, Endpoints, Outcomes, Scores,
+                  PRO Overview, Trial Groups, Safety
   disease_areas : list of allowed indication/disease area names, or None for no restriction
                   Values must match downcase_mesh_term values in the AACT database.
                   See catalogs/condition_sponsor_values.json for valid values.
@@ -33,11 +36,11 @@ USER_ACCESS: dict[str, dict] = {
     "User1": {
         "display_name": "User1",
         "tabs": [
-            "🏠 Home",
-            "📈 Pipeline",
-            "💊 Drug Detail",
-            "📋 Trial Design",
-            "📊 Outcomes",
+            "Home",
+            "Pipeline",
+            "Drug Detail",
+            "Trial Design",
+            "Outcomes",
         ],
         "disease_areas": ["breast neoplasms", "lung neoplasms"],
         "drug_classes":  None,
@@ -45,26 +48,20 @@ USER_ACCESS: dict[str, dict] = {
     "sahil": {
         "display_name": "Sahil",
         "tabs": [
-            "🏠 Home",
-            "💊 Drug Detail",
-            "🏢 Sponsors",
-            "🎯 Endpoints",
-            "📊 Outcomes",
-            "🛡️ Safety",
+            "Home",
+            "Drug Detail",
+            "Sponsors",
+            "Endpoints",
+            "Outcomes",
+            "Safety",
         ],
         "disease_areas": None,
         "drug_classes":  None,
     },
-    "carol": {
-        "display_name": "Carol",
-        "tabs": [
-            "🏠 Home",
-            "📈 Pipeline",
-            "💊 Drug Detail",
-            "📋 Trial Design",
-            "📊 Outcomes",
-        ],
-        "disease_areas": ["colorectal neoplasms"],
-        "drug_classes":  ["Fluoropyrimidines"],
-    },
+    "ambi": {
+        "display_name": "Ambi",
+        "tabs": None,
+        "disease_areas": ["dermatitis, atopic","migraine disorders","pulmonary disease, chronic obstructive"],
+        "drug_classes":  None,
+    }
 }

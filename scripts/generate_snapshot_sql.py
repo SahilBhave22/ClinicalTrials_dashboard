@@ -249,6 +249,16 @@ ALTER TABLE public.overview_kpis_snapshot
         subquery = build_scope_subquery(disease_areas, drug_classes)
         lines.append(build_upsert_block(scope_key, subquery))
 
+    # ── Cleanup: delete stale scope rows no longer in USER_ACCESS ────────────
+    active_keys_sql = ", ".join(_sql_str(k) for k in sorted(seen.keys()))
+    lines.append(f"""\
+-- ── CLEANUP: delete stale scopes no longer in user_access.py ────────────────
+-- Safe to run — only removes rows whose scope_key is not in the current config.
+DELETE FROM public.overview_kpis_snapshot
+WHERE scope_key NOT IN ({active_keys_sql});
+
+""")
+
     lines.append("-- End of generated SQL\n")
     return "\n".join(lines)
 

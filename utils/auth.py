@@ -73,24 +73,36 @@ def get_user_access() -> dict:
     return st.session_state.get("user_access", {})
 
 
+def _tab_text(label: str) -> str:
+    """Strip leading emoji + space from a tab label, returning the plain text portion.
+    e.g. '🏠 Home' -> 'Home',  'Home' -> 'Home'
+    """
+    parts = label.split(" ", 1)
+    return parts[1] if len(parts) > 1 else label
+
+
 def get_allowed_tabs(username: str | None, page_map: list[tuple[str, str]]) -> list[tuple[str, str]]:
     """
     Filter page_map to the entries allowed for the given username.
+
+    Tab names in user_access.py may be written with or without the leading emoji
+    (e.g. 'Home' and '🏠 Home' both match the page_map entry '🏠 Home').
 
     - Users with tabs=None see all tabs.
     - Unknown username (not in USER_ACCESS) returns only the Home tab as a safe fallback.
     - Labels in the user's tabs list that don't match any page_map entry are silently ignored.
     """
     if not username or username not in USER_ACCESS:
-        fallback = [entry for entry in page_map if entry[0] == "🏠 Home"]
+        fallback = [entry for entry in page_map if _tab_text(entry[0]) == "Home"]
         return fallback or ([page_map[0]] if page_map else [])
 
     allowed_tabs = USER_ACCESS[username].get("tabs")
     if allowed_tabs is None:
         return list(page_map)
 
-    allowed_set = set(allowed_tabs)
-    return [entry for entry in page_map if entry[0] in allowed_set]
+    # Match on plain text so user_access.py doesn't need emojis
+    allowed_text = {_tab_text(t) for t in allowed_tabs}
+    return [entry for entry in page_map if _tab_text(entry[0]) in allowed_text]
 
 
 def logout() -> None:
