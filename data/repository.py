@@ -3019,8 +3019,9 @@ def get_faers_reaction_outcome_aggregates(
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def get_reactions_by_soc(brand_names: list[str]) -> pd.DataFrame:
+def get_reactions_by_soc(brand_names: list[str], limit: int = 20) -> pd.DataFrame:
     brand_sql, params = _build_faers_brand_filter(brand_names, col="r.brand_name")
+    params = {**params, "lim": limit}
 
     sql = f"""
         SELECT
@@ -3032,8 +3033,9 @@ def get_reactions_by_soc(brand_names: list[str]) -> pd.DataFrame:
           {brand_sql}
         GROUP BY COALESCE(sm.soc, 'Unknown')
         ORDER BY report_count DESC, soc
+        LIMIT :lim
     """
-    return query_fdaers(sql, params or None)
+    return query_fdaers(sql, params)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -3085,8 +3087,6 @@ def get_outcome_brand_heatmap(brand_names: list[str], limit: int = 10) -> pd.Dat
             COUNT(DISTINCT o.primaryid) AS case_count
         FROM public.faers_ps_outc o
         JOIN top_brands tb ON tb.brand_name = o.brand_name
-        WHERE 1=1
-          {brand_sql}
         GROUP BY o.brand_name, o.outc_cod
         ORDER BY o.brand_name, o.outc_cod
     """
@@ -3146,8 +3146,6 @@ def get_reaction_brand_heatmap(brand_names: list[str], limit: int = 10) -> pd.Da
         FROM public.faers_ps_reac r
         JOIN top_brands tb ON tb.brand_name = r.brand_name
         JOIN top_pts tp ON tp.pt = r.pt
-        WHERE 1=1
-          {brand_sql}
         GROUP BY r.brand_name, r.pt
         ORDER BY r.brand_name, r.pt
     """
