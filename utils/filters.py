@@ -3,7 +3,10 @@ Filter state management: dataclass + Streamlit session_state helpers.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import List, Optional
+import json
+from pathlib import Path
 import streamlit as st
 
 
@@ -95,6 +98,36 @@ class FilterState:
         return out
 
 
+# ── Catalog helpers (no DB, cached for process lifetime) ─────────────────────
+
+@lru_cache(maxsize=1)
+def _load_full_indication_list() -> tuple[str, ...]:
+    """Return all available indications from the static catalog."""
+    try:
+        data = json.loads(
+            Path("catalogs/condition_sponsor_values.json").read_text(encoding="utf-8")
+        )
+        return tuple(
+            sorted([v.strip() for v in data.get("condition_values", "").split("|") if v.strip()])
+        )
+    except Exception:
+        return ()
+
+
+@lru_cache(maxsize=1)
+def _load_full_atc_class_list() -> tuple[str, ...]:
+    """Return all available ATC drug classes from the static catalog."""
+    try:
+        data = json.loads(
+            Path("catalogs/condition_sponsor_values.json").read_text(encoding="utf-8")
+        )
+        return tuple(
+            sorted([v.strip() for v in data.get("drug_class_values", "").split("|") if v.strip()])
+        )
+    except Exception:
+        return ()
+
+
 SESSION_KEY = "filter_state"
 
 
@@ -107,10 +140,31 @@ def get_filters() -> FilterState:
     if SESSION_KEY not in st.session_state:
         st.session_state[SESSION_KEY] = FilterState()
     fs: FilterState = st.session_state[SESSION_KEY]
-    # Re-sync user restrictions from session state on every access
+
+    # Re-sync user restrictions from session state on every access.
+    # Supports both inclusion lists (disease_areas) and exclusion lists (disease_areas_exclude).
+    # If both are supplied, the inclusion list takes precedence.
     ua = st.session_state.get("user_access", {})
-    fs.allowed_indications = ua.get("disease_areas")
-    fs.allowed_atc_classes = ua.get("drug_classes")
+
+    disease_areas         = ua.get("disease_areas")
+    disease_areas_exclude = ua.get("disease_areas_exclude")
+    if disease_areas is not None:
+        fs.allowed_indications = disease_areas
+    elif disease_areas_exclude is not None:
+        excl = {e.lower() for e in disease_areas_exclude}
+        fs.allowed_indications = [i for i in _load_full_indication_list() if i.lower() not in excl]
+    else:
+        fs.allowed_indications = None
+
+    drug_classes         = ua.get("drug_classes")
+    drug_classes_exclude = ua.get("drug_classes_exclude")
+    if drug_classes is not None:
+        fs.allowed_atc_classes = drug_classes
+    elif drug_classes_exclude is not None:
+        excl = {e.lower() for e in drug_classes_exclude}
+        fs.allowed_atc_classes = [c for c in _load_full_atc_class_list() if c.lower() not in excl]
+    else:
+        fs.allowed_atc_classes = None
 
     return fs
 

@@ -75,10 +75,14 @@ def get_user_access() -> dict:
 
 def _tab_text(label: str) -> str:
     """Strip leading emoji + space from a tab label, returning the plain text portion.
-    e.g. '🏠 Home' -> 'Home',  'Home' -> 'Home'
+    e.g. '🏠 Home' -> 'Home',  'Home' -> 'Home',  'Drug Detail' -> 'Drug Detail'
+    Only strips the first token if it is non-ASCII (i.e. an emoji), so multi-word
+    plain-text names like 'Drug Pricing' are returned unchanged.
     """
     parts = label.split(" ", 1)
-    return parts[1] if len(parts) > 1 else label
+    if len(parts) > 1 and not parts[0].isascii():
+        return parts[1]
+    return label
 
 
 def get_allowed_tabs(username: str | None, page_map: list[tuple[str, str]]) -> list[tuple[str, str]]:
@@ -88,21 +92,32 @@ def get_allowed_tabs(username: str | None, page_map: list[tuple[str, str]]) -> l
     Tab names in user_access.py may be written with or without the leading emoji
     (e.g. 'Home' and '🏠 Home' both match the page_map entry '🏠 Home').
 
-    - Users with tabs=None see all tabs.
-    - Unknown username (not in USER_ACCESS) returns only the Home tab as a safe fallback.
-    - Labels in the user's tabs list that don't match any page_map entry are silently ignored.
+    Supports two configuration modes (inclusion wins if both are set):
+    - tabs=[...] — show only these tabs
+    - tabs_exclude=[...] — show all tabs EXCEPT these
+    - tabs=None and no tabs_exclude — show all tabs
+
+    Unknown username returns only the Home tab as a safe fallback.
     """
     if not username or username not in USER_ACCESS:
         fallback = [entry for entry in page_map if _tab_text(entry[0]) == "Home"]
         return fallback or ([page_map[0]] if page_map else [])
 
-    allowed_tabs = USER_ACCESS[username].get("tabs")
-    if allowed_tabs is None:
-        return list(page_map)
+    cfg = USER_ACCESS[username]
+    allowed_tabs  = cfg.get("tabs")
+    excluded_tabs = cfg.get("tabs_exclude")
 
-    # Match on plain text so user_access.py doesn't need emojis
-    allowed_text = {_tab_text(t) for t in allowed_tabs}
-    return [entry for entry in page_map if _tab_text(entry[0]) in allowed_text]
+    if allowed_tabs is not None:
+        # Inclusion list takes precedence over any exclude list
+        allowed_text = {_tab_text(t) for t in allowed_tabs}
+        return [entry for entry in page_map if _tab_text(entry[0]) in allowed_text]
+
+    if excluded_tabs is not None:
+        # Exclusion mode — all tabs except the listed ones
+        excluded_text = {_tab_text(t) for t in excluded_tabs}
+        return [entry for entry in page_map if _tab_text(entry[0]) not in excluded_text]
+
+    return list(page_map)
 
 
 def logout() -> None:

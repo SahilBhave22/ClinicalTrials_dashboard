@@ -16,14 +16,77 @@ Does NOT connect to the database — safe to run anywhere.
 from __future__ import annotations
 
 import sys
-import os
+import json
 from pathlib import Path
 from datetime import datetime, timezone
+from functools import lru_cache
 
 # Allow importing from project root
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from config.user_access import USER_ACCESS
+
+
+# ── Catalog loaders (no DB — reads the static JSON catalog) ──────────────────
+
+@lru_cache(maxsize=1)
+def _catalog_indications() -> tuple[str, ...]:
+    """All available indications from catalogs/condition_sponsor_values.json."""
+    try:
+        data = json.loads(
+            (Path(__file__).parent.parent / "catalogs/condition_sponsor_values.json")
+            .read_text(encoding="utf-8")
+        )
+        return tuple(
+            sorted([v.strip() for v in data.get("condition_values", "").split("|") if v.strip()])
+        )
+    except Exception as exc:
+        print(f"WARNING: could not load indication catalog: {exc}")
+        return ()
+
+
+@lru_cache(maxsize=1)
+def _catalog_atc_classes() -> tuple[str, ...]:
+    """All available ATC drug classes from catalogs/condition_sponsor_values.json."""
+    try:
+        data = json.loads(
+            (Path(__file__).parent.parent / "catalogs/condition_sponsor_values.json")
+            .read_text(encoding="utf-8")
+        )
+        return tuple(
+            sorted([v.strip() for v in data.get("drug_class_values", "").split("|") if v.strip()])
+        )
+    except Exception as exc:
+        print(f"WARNING: could not load ATC class catalog: {exc}")
+        return ()
+
+
+def _resolve_disease_areas(cfg: dict) -> list[str] | None:
+    """
+    Return the effective inclusion list for disease areas, supporting both
+    disease_areas (inclusion) and disease_areas_exclude (exclusion) config modes.
+    Returns None when no restriction applies (unrestricted / global).
+    """
+    if "disease_areas" in cfg and cfg["disease_areas"] is not None:
+        return cfg["disease_areas"]
+    if "disease_areas_exclude" in cfg and cfg["disease_areas_exclude"] is not None:
+        excl = {e.lower() for e in cfg["disease_areas_exclude"]}
+        return [i for i in _catalog_indications() if i.lower() not in excl]
+    return None
+
+
+def _resolve_drug_classes(cfg: dict) -> list[str] | None:
+    """
+    Return the effective inclusion list for drug classes, supporting both
+    drug_classes (inclusion) and drug_classes_exclude (exclusion) config modes.
+    Returns None when no restriction applies.
+    """
+    if "drug_classes" in cfg and cfg["drug_classes"] is not None:
+        return cfg["drug_classes"]
+    if "drug_classes_exclude" in cfg and cfg["drug_classes_exclude"] is not None:
+        excl = {e.lower() for e in cfg["drug_classes_exclude"]}
+        return [c for c in _catalog_atc_classes() if c.lower() not in excl]
+    return None
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -221,11 +284,14 @@ ALTER TABLE public.overview_kpis_snapshot
 
     # Collect unique profiles — deduplicate by scope_key so users with identical
     # access don't generate duplicate SQL blocks.
+    # _resolve_* handles both inclusion (disease_areas) and exclusion
+    # (disease_areas_exclude) config modes, producing the same inclusion list
+    # that utils/filters.py builds at runtime.
     seen: dict[str, tuple] = {}   # scope_key → (disease_areas, drug_classes)
 
     for username, cfg in USER_ACCESS.items():
-        disease_areas = cfg.get("disease_areas")   # None or list
-        drug_classes  = cfg.get("drug_classes")    # None or list
+        disease_areas = _resolve_disease_areas(cfg)
+        drug_classes  = _resolve_drug_classes(cfg)
         key = build_scope_key(disease_areas, drug_classes)
         if key not in seen:
             seen[key] = (disease_areas, drug_classes)
@@ -239,7 +305,7 @@ ALTER TABLE public.overview_kpis_snapshot
 
     users_per_scope: dict[str, list[str]] = {}
     for username, cfg in USER_ACCESS.items():
-        key = build_scope_key(cfg.get("disease_areas"), cfg.get("drug_classes"))
+        key = build_scope_key(_resolve_disease_areas(cfg), _resolve_drug_classes(cfg))
         users_per_scope.setdefault(key, []).append(username)
 
     for scope_key, (disease_areas, drug_classes) in ordered:
@@ -272,7 +338,7 @@ if __name__ == "__main__":
     print("Scopes generated:")
     seen: dict[str, list[str]] = {}
     for username, cfg in USER_ACCESS.items():
-        key = build_scope_key(cfg.get("disease_areas"), cfg.get("drug_classes"))
+        key = build_scope_key(_resolve_disease_areas(cfg), _resolve_drug_classes(cfg))
         seen.setdefault(key, []).append(username)
     for key, users in sorted(seen.items()):
         print(f"  {key:<60}  (users: {', '.join(sorted(users))})")

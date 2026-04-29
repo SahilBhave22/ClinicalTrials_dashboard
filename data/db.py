@@ -10,7 +10,7 @@ import pandas as pd
 
 # Import the existing db_conn utilities
 from utils.db_conn import exec_sql, get_engine  # noqa: F401 (re-export)
-from config.settings import DB_AACT, DB_DRUGS, DB_PRICING, DB_MARKET_ACCESS
+from config.settings import DB_AACT, DB_DRUGS, DB_PRICING, DB_MARKET_ACCESS, DB_FDAERS
 
 
 @st.cache_data(ttl=300, show_spinner=False)
@@ -69,4 +69,14 @@ def query_market_access(sql: str, params: dict | None = None) -> pd.DataFrame:
         return exec_sql(sql, DB_MARKET_ACCESS, params)
     except Exception as e:
         st.error(f"Market Access DB query error: {e}")
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def query_fdaers(sql: str, params: dict | None = None) -> pd.DataFrame:
+    """Execute a read-only SQL query against the FAERS database with extended cache."""
+    try:
+        return exec_sql(sql, DB_FDAERS, params, timeout_s=300)
+    except Exception as e:
+        st.error(f"FAERS query error: {e}")
         return pd.DataFrame()

@@ -3,23 +3,18 @@ SAFETY ANALYSIS page.
 Adverse events: terms, organ systems, drug linkage, frequency analysis.
 """
 from __future__ import annotations
+
 import streamlit as st
 
-from components.page_header import page_header
-from components.metric_cards import kpi_row
-from components.filter_summary import filter_summary_bar
-from components.charts import bar_chart, donut_chart, treemap_chart, heatmap_chart
+from components.alerts import ae_interpretation_warning, filter_required_callout, no_data_callout
 from components.chart_tile import chart_tile
-from components.alerts import ae_interpretation_warning, no_data_callout, filter_required_callout
+from components.charts import bar_chart, donut_chart, heatmap_chart, treemap_chart
+from components.filter_summary import filter_summary_bar
+from components.page_header import page_header
 from components.tables import ag_table, csv_download_button
+from data.repository import get_ae_aggregates, get_ae_by_drug, get_ae_detail_table
+from services.safety_analysis import add_incidence_column, top_ae_terms
 from utils.filters import FilterState
-from utils.formatting import fmt_number
-from services.safety_analysis import top_ae_terms, add_incidence_column
-from data.repository import (
-    get_ae_aggregates,
-    get_ae_by_drug,
-    get_ae_detail_table,
-)
 
 
 def render(filters: FilterState) -> None:
@@ -34,17 +29,6 @@ def render(filters: FilterState) -> None:
 
     with st.spinner("Loading safety data..."):
         ae_agg = get_ae_aggregates(filters)
-    kpis_data = ae_agg["kpis"]
-
-    # ── KPIs ──────────────────────────────────────────────────────────────────
-    kpi_row([
-        {"label": "Trials with AEs",        "value": kpis_data["trials_with_ae"],          "icon": "🧪"},
-        {"label": "AE Records",             "value": kpis_data["total_ae_records"],         "icon": "📋"},
-        {"label": "Unique AE Terms",        "value": kpis_data["unique_ae_terms"],          "icon": "🔬"},
-        {"label": "Organ Systems",          "value": kpis_data["unique_organ_systems"],     "icon": "🫀"},
-        {"label": "Total Subjects Affected","value": kpis_data["total_subjects_affected"],  "icon": "👥"},
-    ])
-    st.markdown("<br>", unsafe_allow_html=True)
 
     if not filters.has_any_filter():
         filter_required_callout(
@@ -53,30 +37,33 @@ def render(filters: FilterState) -> None:
         )
         return
 
-    # ── Organ system / AE term filters ────────────────────────────────────────
     col_f1, col_f2 = st.columns(2)
     with col_f1:
         organ_system_filter = st.text_input(
-            "Filter by Organ System (optional)", placeholder="e.g. Gastrointestinal disorders",
+            "Filter by Organ System (optional)",
+            placeholder="e.g. Gastrointestinal disorders",
             key="ae_organ_filter",
         )
     with col_f2:
         ae_term_filter = st.text_input(
-            "Filter by AE Term (optional)", placeholder="e.g. Nausea",
+            "Filter by AE Term (optional)",
+            placeholder="e.g. Nausea",
             key="ae_term_filter",
         )
 
-    os_val  = organ_system_filter.strip() or None
+    os_val = organ_system_filter.strip() or None
     aet_val = ae_term_filter.strip() or None
 
     with st.spinner("Loading charts..."):
-        top_ae_df  = ae_agg["top_ae"]
-        organ_df   = ae_agg["organ"]
+        top_ae_df = ae_agg["top_ae"]
+        organ_df = ae_agg["organ"]
         drug_ae_df = get_ae_by_drug(filters, limit=20)
 
-    # ── Tabs ──────────────────────────────────────────────────────────────────
     tab1, tab2, tab3, tab4 = st.tabs([
-        "🔢 Top AE Terms", "🫀 Organ Systems", "💊 By Drug", "📄 Detail Table"
+        "🔢 Top AE Terms",
+        "🫀 Organ Systems",
+        "💊 By Drug",
+        "📄 Detail Table",
     ])
 
     with tab1:
@@ -85,13 +72,25 @@ def render(filters: FilterState) -> None:
         else:
             c1, c2 = st.columns(2)
             with c1:
-                chart_tile(bar_chart(top_ae_df.head(15), "adverse_event_term", "trial_count",
-                                     orientation="h",
-                                     title="Top AE Terms by Trial Count"))
+                chart_tile(
+                    bar_chart(
+                        top_ae_df.head(15),
+                        "adverse_event_term",
+                        "trial_count",
+                        orientation="h",
+                        title="Top AE Terms by Trial Count",
+                    )
+                )
             with c2:
-                chart_tile(bar_chart(top_ae_df.head(15), "adverse_event_term", "total_affected",
-                                     orientation="h",
-                                     title="Top AE Terms by Subjects Affected"))
+                chart_tile(
+                    bar_chart(
+                        top_ae_df.head(15),
+                        "adverse_event_term",
+                        "total_affected",
+                        orientation="h",
+                        title="Top AE Terms by Subjects Affected",
+                    )
+                )
             ag_table(top_ae_df, height=350, key="ae_top_table")
             csv_download_button(top_ae_df, "top_ae_terms.csv")
 
@@ -102,14 +101,25 @@ def render(filters: FilterState) -> None:
             top10_organ = organ_df.head(10)
             c1, c2 = st.columns(2)
             with c1:
-                chart_tile(bar_chart(top10_organ, "organ_system", "trial_count",
-                                     orientation="h",
-                                     title="Top 10 Organ Systems by Trial Count"),
-                           height=440)
+                chart_tile(
+                    bar_chart(
+                        top10_organ,
+                        "organ_system",
+                        "trial_count",
+                        orientation="h",
+                        title="Top 10 Organ Systems by Trial Count",
+                    ),
+                    height=440,
+                )
             with c2:
-                chart_tile(treemap_chart(top10_organ, path=["organ_system"],
-                                         values="total_affected",
-                                         title="Top 10 Organ Systems by Subjects Affected"))
+                chart_tile(
+                    treemap_chart(
+                        top10_organ,
+                        path=["organ_system"],
+                        values="total_affected",
+                        title="Top 10 Organ Systems by Subjects Affected",
+                    )
+                )
             csv_download_button(organ_df, "organ_systems.csv")
 
     with tab3:
@@ -118,13 +128,25 @@ def render(filters: FilterState) -> None:
         else:
             c1, c2 = st.columns(2)
             with c1:
-                chart_tile(bar_chart(drug_ae_df, "brand_name", "trial_count",
-                                     orientation="h",
-                                     title="AE Trials by Drug"))
+                chart_tile(
+                    bar_chart(
+                        drug_ae_df,
+                        "brand_name",
+                        "trial_count",
+                        orientation="h",
+                        title="AE Trials by Drug",
+                    )
+                )
             with c2:
-                chart_tile(bar_chart(drug_ae_df, "brand_name", "unique_terms",
-                                     orientation="h",
-                                     title="Unique AE Terms per Drug"))
+                chart_tile(
+                    bar_chart(
+                        drug_ae_df,
+                        "brand_name",
+                        "unique_terms",
+                        orientation="h",
+                        title="Unique AE Terms per Drug",
+                    )
+                )
             csv_download_button(drug_ae_df, "drug_ae_summary.csv")
 
     with tab4:
@@ -137,7 +159,7 @@ def render(filters: FilterState) -> None:
         if st.button("Load Detail Table", key="ae_detail_btn"):
             st.session_state[load_key] = True
         if st.session_state.get(load_key):
-            with st.spinner("Loading AE detail…"):
+            with st.spinner("Loading AE detail..."):
                 detail_df = get_ae_detail_table(filters, os_val, aet_val)
             if detail_df.empty:
                 no_data_callout("adverse event detail")

@@ -228,10 +228,10 @@ def render_sidebar() -> FilterState:
         st.markdown("#### 🌐 Global Filters")
         st.caption("Drug class and MeSH condition filters")
 
-        # Per-user restrictions from session state
-        _ua = st.session_state.get("user_access", {})
-        _allowed_ind = _ua.get("disease_areas")   # None = unrestricted, list = restricted
-        _allowed_atc = _ua.get("drug_classes")     # None = unrestricted, list = restricted
+        # Per-user restrictions — read from FilterState (already resolved from
+        # user_access, including any _exclude list expansion done in get_filters())
+        _allowed_ind = fs.allowed_indications   # None = unrestricted, list = restricted
+        _allowed_atc = fs.allowed_atc_classes   # None = unrestricted, list = restricted
 
         # ── Indication filter ────────────────────────────────────────────────
         if _allowed_ind is not None:

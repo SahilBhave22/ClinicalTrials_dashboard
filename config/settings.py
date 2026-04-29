@@ -91,6 +91,9 @@ HISTORICAL_PRICING_TABLE  = "historical_pricing"
 
 # ── Market Access DB ──────────────────────────────────────────────────────────
 DB_MARKET_ACCESS = "marketaccess"
+
+# ── FDA ERS (FAERS) DB ────────────────────────────────────────────────────────
+DB_FDAERS = "fdaers"
 MA_TABLE_2025    = "mapped_access_2025"
 MA_TABLE_2026    = "mapped_access_2026"
 MA_PAYERS        = ["aetna", "cigna", "united", "kaiser", "optum", "anthem"]

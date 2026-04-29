@@ -1,0 +1,425 @@
+{
+  "dialect": "postgresql",
+  "description": "FAERS schema catalog (partially inferred from user queries). Replace/extend with your exact schema.",
+  "tables": [
+    {
+      "name": "demo",
+      "description": "Report-level demographics and metadata.",
+      "primary_key": [
+        "primaryid"
+      ],
+      "columns": [
+        {
+          "name": "primaryid",
+          "type": "bigint",
+          "description": "Unique report identifier (FAERS report)."
+        },
+        {
+          "name": "caseid",
+          "type": "bigint",
+          "description": "Case identifier; multiple primaryids may belong to one case."
+        },
+        {
+          "name": "fda_dt",
+          "type": "date",
+          "description": "FDA event/reported date. format is yyyymmdd"
+        },
+        {
+          "name": "age",
+          "type": "numeric",
+          "description": "Patient age value."
+        },
+        {
+          "name": "age_cod",
+          "type": "text",
+          "description": "Age unit code: DEC, YR, MON, WK, DY, HR."
+        },
+        {
+          "name": "sex",
+          "type": "text",
+          "description": "Sex code: M , F"
+        },
+        {
+          "name": "wt",
+          "type": "numeric",
+          "description": "Weight value."
+        },
+        {
+          "name": "wt_cod",
+          "type": "text",
+          "description": "Weight unit (if present)."
+        },
+        {
+          "name": "occp_cod",
+          "type": "text",
+          "description": "Reporter occupation code are MD: Physician, PH: Pharmacist, OT: Other health professional, LW: Lawyers, CN: Consumer/etc), HP: Health professional"
+        },
+        {
+          "name": "reporter_country",
+          "type": "text",
+          "description": "Reporter country (2-letter code)."
+        }
+      ]
+    },
+    {
+      "name": "drug_cases",
+      "description": "Brand/generic drug mentions at the report level with sequence linking to indications and therapies.",
+      "primary_key": [
+        "primaryid",
+        "drug_seq"
+      ],
+      "columns": [
+        {
+          "name": "primaryid",
+          "type": "bigint",
+          "description": "FK to demo.primaryid"
+        },
+        {
+          "name": "caseid",
+          "type": "bigint",
+          "description": "Denormalized case id (if present)."
+        },
+        {
+          "name": "drug_seq",
+          "type": "integer",
+          "description": "Drug sequence within the report."
+        },
+        {
+          "name": "brand_name",
+          "type": "text",
+          "description": "Brand name of the product (if known)."
+        },
+        {
+          "name": "generic_name",
+          "type": "text",
+          "description": "Generic name of the product (if known)."
+        },
+        {
+          "name": "role_cod",
+          "type": "text",
+          "description": "Role of the drug in the case. Possible values PS: Primary Suspect, SS: Secondary Suspect, C: Concominant"
+        }
+      ]
+    },
+    {
+      "name": "drug",
+      "description": "FAERS drug table variant (if present in your warehouse). Keep if you also store normalized DRUG rows here.",
+      "primary_key": [
+        "primaryid",
+        "drug_seq"
+      ],
+      "columns": [
+        {
+          "name": "primaryid",
+          "type": "bigint",
+          "description": "FK to demo.primaryid"
+        },
+        {
+          "name": "drug_seq",
+          "type": "integer",
+          "description": "Drug sequence within the report."
+        },
+        {
+          "name": "drugname",
+          "type": "text",
+          "description": "Reported drug name."
+        },
+        {
+          "name": "prod_ai",
+          "type": "text",
+          "description": "Active ingredient."
+        },
+        {
+          "name": "route",
+          "type": "text",
+          "description": "Route of administration (if available)."
+        },
+        {
+          "name": "role_cod",
+          "type": "text",
+          "description": "Role of the drug in the case. Possible values PS: Primary Suspect, SS: Secondary Suspect, C: Concominant"
+        }
+      ]
+    },
+    {
+      "name": "indi",
+      "description": "Indications for use linked to a specific drug in the report.",
+      "primary_key": [
+        "primaryid",
+        "indi_drug_seq"
+      ],
+      "columns": [
+        {
+          "name": "primaryid",
+          "type": "bigint",
+          "description": "FK to demo.primaryid"
+        },
+        {
+          "name": "indi_drug_seq",
+          "type": "integer",
+          "description": "Matches drug_seq of the intended drug in the report."
+        },
+        {
+          "name": "indi_pt",
+          "type": "text",
+          "description": "MedDRA Preferred Term for the indication."
+        }
+      ]
+    },
+    {
+      "name": "reac",
+      "description": "Reported adverse reactions (events) for a given report.",
+      "primary_key": [
+        "primaryid",
+        "pt"
+      ],
+      "columns": [
+        {
+          "name": "primaryid",
+          "type": "bigint",
+          "description": "FK to demo.primaryid"
+        },
+        {
+          "name": "pt",
+          "type": "text",
+          "description": "MedDRA Preferred Term for the reaction (event)."
+        }
+      ]
+    },
+    {
+      "name": "soc_map",
+      "description": "Mapping between MedDRA PT and System Organ Class (SOC).",
+      "primary_key": [
+        "pt"
+      ],
+      "columns": [
+        {
+          "name": "english_pt",
+          "type": "text",
+          "description": "MedDRA Preferred Term."
+        },
+        {
+          "name": "soc",
+          "type": "text",
+          "description": "MedDRA System Organ Class for the PT."
+        }
+      ]
+    },
+    {
+      "name": "outc",
+      "description": "Clinical outcomes per report.",
+      "primary_key": [
+        "primaryid",
+        "outc_cod"
+      ],
+      "columns": [
+        {
+          "name": "primaryid",
+          "type": "bigint",
+          "description": "FK to demo.primaryid"
+        },
+        {
+          "name": "outc_cod",
+          "type": "text",
+          "description": "Outcome code (e.g., DE=Death, LT=Life-threatening, HO=Hospitalization, etc.)."
+        }
+      ]
+    },
+    {
+      "name": "faers_ps_reac",
+      "description": "Pre-scoped FAERS primary suspect reaction table derived from drug_cases JOIN reac. Optimized for brand-filtered adverse event queries.",
+      "primary_key": [
+        "primaryid",
+        "brand_name",
+        "pt"
+      ],
+      "columns": [
+        {
+          "name": "primaryid",
+          "type": "bigint",
+          "description": "FAERS report identifier."
+        },
+        {
+          "name": "brand_name",
+          "type": "text",
+          "description": "Uppercased primary suspect brand name."
+        },
+        {
+          "name": "pt",
+          "type": "text",
+          "description": "MedDRA Preferred Term for the reaction."
+        }
+      ]
+    },
+    {
+      "name": "faers_ps_outc",
+      "description": "Pre-scoped FAERS primary suspect outcomes table derived from drug_cases JOIN outc. Optimized for brand-filtered outcome queries.",
+      "primary_key": [
+        "primaryid",
+        "brand_name",
+        "outc_cod"
+      ],
+      "columns": [
+        {
+          "name": "primaryid",
+          "type": "bigint",
+          "description": "FAERS report identifier."
+        },
+        {
+          "name": "brand_name",
+          "type": "text",
+          "description": "Uppercased primary suspect brand name."
+        },
+        {
+          "name": "outc_cod",
+          "type": "text",
+          "description": "Outcome code (e.g., DE, LT, HO, DS, CA, RI, OT)."
+        }
+      ]
+    },
+    {
+      "name": "faers_ps_demo",
+      "description": "Pre-scoped FAERS primary suspect demographics table derived from drug_cases JOIN demo. Optimized for brand-filtered demographic and timeline queries.",
+      "primary_key": [
+        "primaryid",
+        "brand_name"
+      ],
+      "columns": [
+        {
+          "name": "primaryid",
+          "type": "bigint",
+          "description": "FAERS report identifier."
+        },
+        {
+          "name": "brand_name",
+          "type": "text",
+          "description": "Uppercased primary suspect brand name."
+        },
+        {
+          "name": "fda_dt",
+          "type": "date",
+          "description": "FDA event/reported date."
+        },
+        {
+          "name": "sex",
+          "type": "text",
+          "description": "Sex code."
+        },
+        {
+          "name": "age",
+          "type": "numeric",
+          "description": "Patient age value."
+        },
+        {
+          "name": "age_cod",
+          "type": "text",
+          "description": "Age unit code."
+        },
+        {
+          "name": "reporter_country",
+          "type": "text",
+          "description": "Reporter country code."
+        },
+        {
+          "name": "occp_cod",
+          "type": "text",
+          "description": "Reporter occupation code."
+        }
+      ]
+    },
+    {
+      "name": "public.top_n_ror",
+      "description": "Reporting Odds Ratio (ROR) values for drug-event combinations. It has top n ROR events per drug. USE THIS TABLE FOR SIGNAL RELATED QUESTIONS. ",
+      "primary_key": [
+        "brand_name"
+      ],
+      "columns": [
+        {
+          "name": "brand_name",
+          "type": "character varying",
+          "description": "brand name for a specific drug"
+        },
+        {
+          "name": "pt",
+          "type": "character varying",
+          "description": "MedDRA Preferred Term."
+        },
+        {
+          "name": "ror",
+          "type": "bigint",
+          "description": "ROR value for that drug-event pair. Higher the value, stronger is the signal."
+        }
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "from_table": "drug_cases",
+      "from_columns": [
+        "primaryid"
+      ],
+      "to_table": "demo",
+      "to_columns": [
+        "primaryid"
+      ],
+      "type": "many_to_one"
+    },
+    {
+      "from_table": "indi",
+      "from_columns": [
+        "primaryid",
+        "indi_drug_seq"
+      ],
+      "to_table": "drug_cases",
+      "to_columns": [
+        "primaryid",
+        "drug_seq"
+      ],
+      "type": "many_to_one"
+    },
+    {
+      "from_table": "reac",
+      "from_columns": [
+        "primaryid"
+      ],
+      "to_table": "demo",
+      "to_columns": [
+        "primaryid"
+      ],
+      "type": "many_to_one"
+    },
+    {
+      "from_table": "outc",
+      "from_columns": [
+        "primaryid"
+      ],
+      "to_table": "demo",
+      "to_columns": [
+        "primaryid"
+      ],
+      "type": "many_to_one"
+    },
+    {
+      "from_table": "drug",
+      "from_columns": [
+        "primaryid"
+      ],
+      "to_table": "demo",
+      "to_columns": [
+        "primaryid"
+      ],
+      "type": "many_to_one"
+    },
+    {
+      "from_table": "soc_map",
+      "from_columns": [
+        "english_pt"
+      ],
+      "to_table": "reac",
+      "to_columns": [
+        "pt"
+      ],
+      "type": "many_to_many"
+    }
+  ]
+}

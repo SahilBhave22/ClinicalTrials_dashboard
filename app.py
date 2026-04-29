@@ -49,6 +49,7 @@ PAGE_MAP = [
     ("👤 PRO Overview",  "views.pro_overview"),
     ("🗂️ Trial Groups",  "views.trial_groups"),
     ("🛡️ Safety",        "views.safety_analysis"),
+    ("🌐 Real World Safety", "views.real_world_safety"),
 ]
 
 # ── Global CSS ────────────────────────────────────────────────────────────────

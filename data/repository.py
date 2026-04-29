@@ -12,17 +12,131 @@ Optimisation rules enforced:
 """
 from __future__ import annotations
 
+import json
+from functools import lru_cache
+from pathlib import Path
+
 import streamlit as st
 import pandas as pd
 
-from data.db import query_aact, query_aact_ae, query_aact_uncached, query_pricing, query_drugs, query_market_access
-from data.query_builder import QueryBuilder
+from data.db import (
+    query_aact,
+    query_aact_ae,
+    query_aact_uncached,
+    query_pricing,
+    query_drugs,
+    query_market_access,
+    query_fdaers,
+)
+from data.query_builder import QueryBuilder, _list_clause
 from utils.filters import FilterState
 from config.settings import (
     MAX_TABLE_ROWS, ANNUAL_PRICING_TABLE, HISTORICAL_PRICING_TABLE,
     DRUG_CLASSES_TABLE, DRUGS_ATC_COL, DRUGS_BRAND_COL, DRUG_INDICATIONS_TABLE, DRUGS_INDICATION_COL,
     MA_TABLE_2025, MA_TABLE_2026,
 )
+
+
+_MESH_TO_INDICATION_MAP_PATH = (
+    Path(__file__).resolve().parent.parent / "catalogs" / "mesh_to_indication_map.json"
+)
+
+
+@lru_cache(maxsize=1)
+def _load_mesh_to_indication_map() -> dict[str, list[str]]:
+    """Load the pre-built MeSH-to-indication mapping from disk once per process."""
+    if not _MESH_TO_INDICATION_MAP_PATH.exists():
+        return {}
+    return json.loads(_MESH_TO_INDICATION_MAP_PATH.read_text())
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _resolve_brands_from_mesh_indication(mesh_term: str) -> list[str]:
+    """
+    Resolve brand names for a global MeSH condition using the JSON mapping file.
+
+    Steps:
+      1. Look up the selected MeSH term in catalogs/mesh_to_indication_map.json
+      2. Resolve mapped drug indication labels in public.drug_indications
+      3. Return distinct brand names for pricing / market access queries
+    """
+    if not mesh_term:
+        return []
+
+    mesh_map = _load_mesh_to_indication_map()
+    matched_indications = mesh_map.get(mesh_term.lower().strip(), [])
+    if not matched_indications:
+        return []
+
+    sql = f"""
+        SELECT DISTINCT {DRUGS_BRAND_COL} AS brand_name
+        FROM {DRUG_INDICATIONS_TABLE}
+        WHERE LOWER({DRUGS_INDICATION_COL}) = ANY(:indications)
+          AND {DRUGS_BRAND_COL} IS NOT NULL
+        ORDER BY 1
+    """
+    df = query_drugs(sql, {"indications": [v.lower() for v in matched_indications]})
+    return df["brand_name"].dropna().tolist() if not df.empty else []
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def _resolve_relevant_brands_for_global_filters(
+    indication: str | None,
+    atc_class: str | None,
+) -> list[str]:
+    """
+    Resolve the relevant brand set for the selected global filters from the
+    drugs-side sources, not from co-enrolled trial rows.
+
+    - indication -> mesh_to_indication_map.json -> public.drug_indications
+    - atc_class  -> public.drug_classes
+    - both       -> intersection of the two brand sets
+    """
+    mesh_brands: list[str] | None = None
+    atc_brands: list[str] | None = None
+
+    if indication:
+        mesh_brands = _resolve_brands_from_mesh_indication(indication)
+
+    if atc_class:
+        sql = f"""
+            SELECT DISTINCT {DRUGS_BRAND_COL} AS brand_name
+            FROM {DRUG_CLASSES_TABLE}
+            WHERE {DRUGS_ATC_COL} = :atc_class
+              AND {DRUGS_BRAND_COL} IS NOT NULL
+            ORDER BY 1
+        """
+        df = query_drugs(sql, {"atc_class": atc_class})
+        atc_brands = df["brand_name"].dropna().tolist() if not df.empty else []
+
+    if mesh_brands is not None and atc_brands is not None:
+        atc_set = set(atc_brands)
+        return [b for b in mesh_brands if b in atc_set]
+    if mesh_brands is not None:
+        return mesh_brands
+    if atc_brands is not None:
+        return atc_brands
+    return []
+
+
+OUTC_LABELS = {
+    "DE": "Death",
+    "LT": "Life-Threatening",
+    "HO": "Hospitalisation",
+    "DS": "Disability",
+    "CA": "Congenital Anomaly",
+    "RI": "Required Intervention",
+    "OT": "Other",
+}
+
+OCCP_LABELS = {
+    "MD": "Physician",
+    "PH": "Pharmacist",
+    "OT": "Other HCP",
+    "LW": "Lawyer",
+    "CN": "Consumer",
+    "HP": "Health Professional",
+}
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -104,16 +218,6 @@ def get_filter_options(indication: str | None, atc_class: str | None) -> dict:
         ORDER BY p.instrument_name
         LIMIT 200
     """
-    # Brands in scope
-    sql_brands = f"""
-        SELECT DISTINCT dt.brand_name
-        FROM public.drug_trials dt
-        JOIN ctgov.studies s ON s.nct_id = dt.nct_id
-        WHERE {nct_clause}
-          AND dt.brand_name IS NOT NULL
-        ORDER BY dt.brand_name
-        LIMIT 300
-    """
     # PRO domains
     sql_domains = f"""
         SELECT DISTINCT d.criteria
@@ -140,8 +244,39 @@ def get_filter_options(indication: str | None, atc_class: str | None) -> dict:
             return []
         return df.iloc[:, 0].dropna().tolist()
 
-    # Brands in scope — computed first so we can use them to scope drug_indications
-    brands_list = _vals(query_aact(sql_brands, nct_params))
+    # Brands in scope — computed first so we can use them to scope drug_indications.
+    # Important: constrain the dropdown to the relevant drugs resolved from the
+    # drugs DB / MeSH mapping so co-enrolled brands do not leak into the sidebar.
+    relevant_brands = _resolve_relevant_brands_for_global_filters(indication, atc_class)
+    brands_list: list[str] = []
+    if indication or atc_class:
+        if relevant_brands:
+            brand_params = dict(nct_params)
+            brand_in = _list_clause("dt.brand_name", relevant_brands, brand_params, "gfbn")
+            sql_brands = f"""
+                SELECT DISTINCT dt.brand_name
+                FROM public.drug_trials dt
+                JOIN ctgov.studies s ON s.nct_id = dt.nct_id
+                WHERE {nct_clause}
+                  AND {brand_in}
+                  AND dt.brand_name IS NOT NULL
+                ORDER BY dt.brand_name
+                LIMIT 300
+            """
+            brands_list = _vals(query_aact(sql_brands, brand_params))
+        else:
+            brands_list = []
+    else:
+        sql_brands = f"""
+            SELECT DISTINCT dt.brand_name
+            FROM public.drug_trials dt
+            JOIN ctgov.studies s ON s.nct_id = dt.nct_id
+            WHERE {nct_clause}
+              AND dt.brand_name IS NOT NULL
+            ORDER BY dt.brand_name
+            LIMIT 300
+        """
+        brands_list = _vals(query_aact(sql_brands, nct_params))
 
     # Drug label indications (DRUGS DB, scoped by brands currently in scope).
     # These populate the downstream "Drug Indication" filter in the Sponsor/Drug tab.
@@ -1704,10 +1839,9 @@ def get_groups_per_trial_dist(filters: FilterState) -> pd.DataFrame:
 @st.cache_data(ttl=900, show_spinner=False)
 def get_ae_aggregates(filters: FilterState) -> dict:
     """
-    Single-query replacement for three separate calls:
-      get_adverse_event_summary  → result["kpis"]   (dict)
-      get_top_adverse_events     → result["top_ae"]  (DataFrame, top 25 by trial_count)
-      get_ae_by_organ_system     → result["organ"]   (DataFrame, top 50 by trial_count)
+    Single-query replacement for the chart datasets used on the safety page:
+      get_top_adverse_events  → result["top_ae"]  (DataFrame, top 25 by trial_count)
+      get_ae_by_organ_system  → result["organ"]   (DataFrame, top 50 by trial_count)
 
     Uses one DB round-trip with a shared ae_filtered CTE so reported_events is
     scanned only once per filter combination.
@@ -1715,11 +1849,6 @@ def get_ae_aggregates(filters: FilterState) -> dict:
     import json
 
     _empty: dict = {
-        "kpis": {
-            "trials_with_ae": 0, "total_ae_records": 0,
-            "unique_ae_terms": 0, "unique_organ_systems": 0,
-            "total_subjects_affected": 0,
-        },
         "top_ae": pd.DataFrame(),
         "organ":  pd.DataFrame(),
     }
@@ -1739,18 +1868,7 @@ def get_ae_aggregates(filters: FilterState) -> dict:
             WHERE re.subjects_affected > 0
               AND re.adverse_event_term IS NOT NULL
         )
-        SELECT 'kpi' AS _rs, row_to_json(k.*)::text AS data
-        FROM (
-            SELECT
-                COUNT(DISTINCT nct_id)             AS trials_with_ae,
-                COUNT(*)                           AS total_ae_records,
-                COUNT(DISTINCT adverse_event_term) AS unique_ae_terms,
-                COUNT(DISTINCT organ_system)       AS unique_organ_systems,
-                SUM(subjects_affected)             AS total_subjects_affected
-            FROM ae_filtered
-        ) k
-        UNION ALL
-        SELECT 'top_terms', row_to_json(t.*)::text
+        SELECT 'top_terms' AS _rs, row_to_json(t.*)::text AS data
         FROM (
             SELECT adverse_event_term, organ_system,
                    COUNT(DISTINCT nct_id)  AS trial_count,
@@ -1762,7 +1880,7 @@ def get_ae_aggregates(filters: FilterState) -> dict:
             LIMIT 25
         ) t
         UNION ALL
-        SELECT 'organ_systems', row_to_json(o.*)::text
+        SELECT 'organ_systems' AS _rs, row_to_json(o.*)::text AS data
         FROM (
             SELECT COALESCE(organ_system, 'Unknown') AS organ_system,
                    COUNT(DISTINCT nct_id)            AS trial_count,
@@ -1775,22 +1893,13 @@ def get_ae_aggregates(filters: FilterState) -> dict:
         ) o
     """
     raw = query_aact_ae(sql, params)
-    if raw.empty:
+    if raw.empty or "_rs" not in raw.columns or "data" not in raw.columns:
         return _empty
 
     result: dict = dict(_empty)
     for rs, group in raw.groupby("_rs"):
         rows = [json.loads(r) for r in group["data"]]
-        if rs == "kpi":
-            r = rows[0] if rows else {}
-            result["kpis"] = {
-                "trials_with_ae":          int(r.get("trials_with_ae",          0) or 0),
-                "total_ae_records":        int(r.get("total_ae_records",         0) or 0),
-                "unique_ae_terms":         int(r.get("unique_ae_terms",          0) or 0),
-                "unique_organ_systems":    int(r.get("unique_organ_systems",     0) or 0),
-                "total_subjects_affected": int(r.get("total_subjects_affected",  0) or 0),
-            }
-        elif rs == "top_terms":
+        if rs == "top_terms":
             result["top_ae"] = pd.DataFrame(rows)
         elif rs == "organ_systems":
             result["organ"] = pd.DataFrame(rows)
@@ -2119,7 +2228,7 @@ def _get_pricing_brand_list(filters: FilterState) -> list[str]:
     Priority:
       1. Explicit brand_name filter
       2. ATC class → drug_classes lookup
-      3. Indication → drug_indications lookup (best-effort)
+      3. MeSH indication → mesh_to_indication_map.json → drug_indications lookup
       4. Empty list  → no brand filter, show all pricing data
     """
     if filters.brand_name:
@@ -2137,23 +2246,7 @@ def _get_pricing_brand_list(filters: FilterState) -> list[str]:
         return df.iloc[:, 0].dropna().tolist() if not df.empty else []
 
     if filters.indication_name:
-        from config.settings import (
-            BROWSE_CONDITIONS_TABLE,
-            BROWSE_CONDITIONS_MESH_TERM,
-            BROWSE_CONDITIONS_MESH_TYPE,
-            BROWSE_CONDITIONS_MESH_LIST,
-        )
-        sql = f"""
-            SELECT DISTINCT dt.brand_name
-            FROM public.drug_trials dt
-            JOIN {BROWSE_CONDITIONS_TABLE} bc ON bc.nct_id = dt.nct_id
-            WHERE bc.{BROWSE_CONDITIONS_MESH_TYPE} = '{BROWSE_CONDITIONS_MESH_LIST}'
-              AND bc.{BROWSE_CONDITIONS_MESH_TERM} = :ind
-              AND dt.brand_name IS NOT NULL
-            ORDER BY 1
-        """
-        df = query_aact(sql, {"ind": filters.indication_name})
-        return df.iloc[:, 0].dropna().tolist() if not df.empty else []
+        return _resolve_brands_from_mesh_indication(filters.indication_name)
 
     return []
 
@@ -2719,3 +2812,515 @@ def get_ma_req_grid(filters: FilterState, year: int = 2025, limit: int = 50) -> 
         LIMIT :lim
     """
     return query_market_access(sql, params)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  FAERS  (Real World Safety)
+# ════════════════════════════════════════════════════════════════════════════
+
+def get_faers_brand_scope(filters: FilterState) -> tuple[list[str], str | None]:
+    """
+    Resolve the effective brand scope for FAERS using the same precedence as
+    pricing and market access.
+
+    Returns (brand_names, resolution_note).
+    """
+    brands = _get_pricing_brand_list(filters)
+    if brands:
+        if (
+            filters.indication_name
+            and not filters.brand_name
+            and not filters.atc_class_name
+        ):
+            note = (
+                f'Showing FAERS data for **{len(brands)} drug(s)** linked to '
+                f'"{filters.indication_name}" via the pre-built indication mapping.'
+            )
+            return [b.upper() for b in brands], note
+        return [b.upper() for b in brands], None
+
+    if filters.indication_name and not filters.brand_name and not filters.atc_class_name:
+        if not _MESH_TO_INDICATION_MAP_PATH.exists():
+            note = (
+                "MeSH → indication mapping file not found. "
+                "Run `streamlit run scripts/generate_mesh_indication_map.py` to generate it, "
+                "then reload the dashboard."
+            )
+        else:
+            note = (
+                f'No drugs mapped to "{filters.indication_name}" in the indication catalog. '
+                f'Select a Drug Class or Brand Name in the sidebar to scope FAERS manually.'
+            )
+        return [], note
+
+    return [], None
+
+
+def _build_faers_brand_filter(brand_names: list[str], *, col: str = "dc.brand_name") -> tuple[str, dict]:
+    """Return a SQL fragment and params dict for filtering FAERS by brand names."""
+    if not brand_names:
+        return "", {}
+    upper = [b.upper() for b in brand_names]
+    return f"AND UPPER({col}) = ANY(:brands)", {"brands": upper}
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_faers_kpis(brand_names: list[str]) -> dict:
+    """KPI summary for the Real World Safety page."""
+    brand_sql, params = _build_faers_brand_filter(brand_names)
+
+    sql = f"""
+        SELECT
+            COUNT(DISTINCT d.primaryid)          AS total_reports,
+            COUNT(DISTINCT r.pt)                 AS unique_reactions,
+            COUNT(DISTINCT o.primaryid)          AS serious_outcomes,
+            COUNT(DISTINCT UPPER(dc.brand_name)) AS unique_drugs
+        FROM demo d
+        JOIN public.drug_cases dc ON dc.primaryid = d.primaryid AND dc.role_cod = 'PS'
+        JOIN reac r ON r.primaryid = d.primaryid
+        LEFT JOIN outc o ON o.primaryid = d.primaryid
+        WHERE 1=1
+          {brand_sql}
+    """
+    df = query_fdaers(sql, params or None)
+    if df.empty:
+        return {
+            "total_reports": 0,
+            "unique_reactions": 0,
+            "serious_outcomes": 0,
+            "unique_drugs": 0,
+        }
+    row = df.iloc[0]
+    return {
+        "total_reports": int(row["total_reports"] or 0),
+        "unique_reactions": int(row["unique_reactions"] or 0),
+        "serious_outcomes": int(row["serious_outcomes"] or 0),
+        "unique_drugs": int(row["unique_drugs"] or 0),
+    }
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_top_reactions(brand_names: list[str], limit: int = 20) -> pd.DataFrame:
+    brand_sql, params = _build_faers_brand_filter(brand_names, col="r.brand_name")
+    params = {**params, "lim": limit}
+
+    sql = f"""
+        SELECT
+            r.pt,
+            COALESCE(sm.soc, 'Unknown') AS soc,
+            COUNT(DISTINCT r.primaryid) AS report_count
+        FROM public.faers_ps_reac r
+        LEFT JOIN public.soc_map sm ON sm.english_pt = r.pt
+        WHERE 1=1
+          {brand_sql}
+        GROUP BY r.pt, COALESCE(sm.soc, 'Unknown')
+        ORDER BY report_count DESC, r.pt
+        LIMIT :lim
+    """
+    return query_fdaers(sql, params)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_faers_reaction_outcome_aggregates(
+    brand_names: list[str],
+    *,
+    top_reaction_limit: int = 20,
+) -> dict[str, pd.DataFrame]:
+    """
+    Shared FAERS aggregate query for the RW Safety page.
+
+    Only loads data derived from reaction and outcome sources:
+      - top reactions
+      - reactions by SOC
+      - outcomes distribution
+    """
+    empty = {
+        "top_reactions": pd.DataFrame(),
+        "soc": pd.DataFrame(),
+        "outcomes": pd.DataFrame(),
+    }
+    if not brand_names:
+        return empty
+
+    import json
+
+    brand_sql, base_params = _build_faers_brand_filter(brand_names)
+
+    reaction_sql = f"""
+        WITH reaction_base AS (
+            SELECT DISTINCT
+                dc.primaryid,
+                r.pt,
+                COALESCE(sm.soc, 'Unknown') AS soc
+            FROM public.drug_cases dc
+            JOIN reac r ON r.primaryid = dc.primaryid
+            LEFT JOIN soc_map sm ON sm.english_pt = r.pt
+            WHERE dc.role_cod = 'PS'
+              {brand_sql}
+        )
+        SELECT 'top_reactions' AS _rs, row_to_json(t.*)::text AS data
+        FROM (
+            SELECT
+                pt,
+                COUNT(*) AS report_count
+            FROM reaction_base
+            GROUP BY pt
+            ORDER BY report_count DESC, pt
+            LIMIT :top_reaction_limit
+        ) t
+        UNION ALL
+        SELECT 'soc', row_to_json(s.*)::text
+        FROM (
+            SELECT
+                soc,
+                COUNT(*) AS report_count
+            FROM reaction_base
+            GROUP BY soc
+            ORDER BY report_count DESC, soc
+        ) s
+    """
+    reaction_raw = query_fdaers(
+        reaction_sql,
+        {**base_params, "top_reaction_limit": top_reaction_limit},
+    )
+
+    outcome_sql = f"""
+        WITH outcome_base AS (
+            SELECT DISTINCT
+                dc.primaryid,
+                o.outc_cod
+            FROM public.drug_cases dc
+            JOIN outc o ON o.primaryid = dc.primaryid
+            WHERE dc.role_cod = 'PS'
+              {brand_sql}
+        )
+        SELECT
+            outc_cod,
+            COUNT(*) AS report_count
+        FROM outcome_base
+        GROUP BY outc_cod
+        ORDER BY report_count DESC, outc_cod
+    """
+    outcome_df = query_fdaers(outcome_sql, base_params)
+
+    result = dict(empty)
+    if not reaction_raw.empty:
+        for rs, group in reaction_raw.groupby("_rs"):
+            rows = [json.loads(r) for r in group["data"]]
+            if rs == "top_reactions":
+                result["top_reactions"] = pd.DataFrame(rows)
+            elif rs == "soc":
+                result["soc"] = pd.DataFrame(rows)
+
+    if not outcome_df.empty:
+        outcome_df["outcome_label"] = outcome_df["outc_cod"].map(OUTC_LABELS).fillna(outcome_df["outc_cod"])
+        result["outcomes"] = outcome_df
+    return result
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_reactions_by_soc(brand_names: list[str]) -> pd.DataFrame:
+    brand_sql, params = _build_faers_brand_filter(brand_names, col="r.brand_name")
+
+    sql = f"""
+        SELECT
+            COALESCE(sm.soc, 'Unknown') AS soc,
+            COUNT(DISTINCT r.primaryid) AS report_count
+        FROM public.faers_ps_reac r
+        LEFT JOIN public.soc_map sm ON sm.english_pt = r.pt
+        WHERE 1=1
+          {brand_sql}
+        GROUP BY COALESCE(sm.soc, 'Unknown')
+        ORDER BY report_count DESC, soc
+    """
+    return query_fdaers(sql, params or None)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_outcomes_distribution(brand_names: list[str]) -> pd.DataFrame:
+    brand_sql, params = _build_faers_brand_filter(brand_names, col="o.brand_name")
+
+    sql = f"""
+        SELECT o.outc_cod, COUNT(DISTINCT o.primaryid) AS report_count
+        FROM public.faers_ps_outc o
+        WHERE 1=1
+          {brand_sql}
+        GROUP BY o.outc_cod
+        ORDER BY report_count DESC
+    """
+    df = query_fdaers(sql, params or None)
+    if not df.empty and "outc_cod" in df.columns:
+        df["outcome_label"] = df["outc_cod"].map(OUTC_LABELS).fillna(df["outc_cod"])
+    return df
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_outcome_brand_heatmap(brand_names: list[str], limit: int = 10) -> pd.DataFrame:
+    """
+    Pivoted top-brand × outcome matrix for the RW Safety outcomes heatmap.
+
+    Uses only drug_cases scoped by brand and joins to outc.
+    """
+    if not brand_names:
+        return pd.DataFrame()
+
+    brand_sql, params = _build_faers_brand_filter(brand_names, col="o.brand_name")
+    params = {**params, "lim": limit}
+
+    sql = f"""
+        WITH top_brands AS (
+            SELECT
+                o.brand_name,
+                COUNT(DISTINCT o.primaryid) AS case_count
+            FROM public.faers_ps_outc o
+            WHERE 1=1
+              {brand_sql}
+            GROUP BY o.brand_name
+            ORDER BY case_count DESC, o.brand_name
+            LIMIT :lim
+        )
+        SELECT
+            o.brand_name,
+            o.outc_cod,
+            COUNT(DISTINCT o.primaryid) AS case_count
+        FROM public.faers_ps_outc o
+        JOIN top_brands tb ON tb.brand_name = o.brand_name
+        WHERE 1=1
+          {brand_sql}
+        GROUP BY o.brand_name, o.outc_cod
+        ORDER BY o.brand_name, o.outc_cod
+    """
+    df = query_fdaers(sql, params)
+    if df.empty:
+        return pd.DataFrame()
+
+    df["outcome_label"] = df["outc_cod"].map(OUTC_LABELS).fillna(df["outc_cod"])
+    pivot = (
+        df.pivot(index="brand_name", columns="outcome_label", values="case_count")
+        .fillna(0)
+        .astype(int)
+    )
+    return pivot
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_reaction_brand_heatmap(brand_names: list[str], limit: int = 10) -> pd.DataFrame:
+    """
+    Pivoted top-brand × top-reaction matrix for the RW Safety adverse event heatmap.
+
+    Uses the pre-scoped faers_ps_reac table only.
+    """
+    if not brand_names:
+        return pd.DataFrame()
+
+    brand_sql, params = _build_faers_brand_filter(brand_names, col="r.brand_name")
+    params = {**params, "lim": limit}
+
+    sql = f"""
+        WITH top_brands AS (
+            SELECT
+                r.brand_name,
+                COUNT(DISTINCT r.primaryid) AS case_count
+            FROM public.faers_ps_reac r
+            WHERE 1=1
+              {brand_sql}
+            GROUP BY r.brand_name
+            ORDER BY case_count DESC, r.brand_name
+            LIMIT :lim
+        ),
+        top_pts AS (
+            SELECT
+                r.pt,
+                COUNT(DISTINCT r.primaryid) AS case_count
+            FROM public.faers_ps_reac r
+            WHERE 1=1
+              {brand_sql}
+            GROUP BY r.pt
+            ORDER BY case_count DESC, r.pt
+            LIMIT :lim
+        )
+        SELECT
+            r.brand_name,
+            r.pt,
+            COUNT(DISTINCT r.primaryid) AS case_count
+        FROM public.faers_ps_reac r
+        JOIN top_brands tb ON tb.brand_name = r.brand_name
+        JOIN top_pts tp ON tp.pt = r.pt
+        WHERE 1=1
+          {brand_sql}
+        GROUP BY r.brand_name, r.pt
+        ORDER BY r.brand_name, r.pt
+    """
+    df = query_fdaers(sql, params)
+    if df.empty:
+        return pd.DataFrame()
+
+    pivot = (
+        df.pivot(index="brand_name", columns="pt", values="case_count")
+        .fillna(0)
+        .astype(int)
+    )
+    return pivot
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_reports_over_time(brand_names: list[str]) -> pd.DataFrame:
+    brand_sql, params = _build_faers_brand_filter(brand_names)
+
+    sql = f"""
+        SELECT
+            DATE_PART('year', d.fda_dt)::int AS year,
+            COUNT(DISTINCT d.primaryid) AS report_count
+        FROM demo d
+        JOIN public.drug_cases dc ON dc.primaryid = d.primaryid AND dc.role_cod = 'PS'
+        WHERE d.fda_dt IS NOT NULL
+          {brand_sql}
+        GROUP BY year
+        ORDER BY year
+    """
+    return query_fdaers(sql, params or None)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_sex_breakdown(brand_names: list[str]) -> pd.DataFrame:
+    brand_sql, params = _build_faers_brand_filter(brand_names)
+
+    sql = f"""
+        SELECT
+            CASE d.sex
+                WHEN 'M' THEN 'Male'
+                WHEN 'F' THEN 'Female'
+                ELSE 'Unknown'
+            END AS sex,
+            COUNT(DISTINCT d.primaryid) AS report_count
+        FROM demo d
+        JOIN public.drug_cases dc ON dc.primaryid = d.primaryid AND dc.role_cod = 'PS'
+        WHERE 1=1
+          {brand_sql}
+        GROUP BY d.sex
+        ORDER BY report_count DESC
+    """
+    return query_fdaers(sql, params or None)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_age_distribution(brand_names: list[str]) -> pd.DataFrame:
+    brand_sql, params = _build_faers_brand_filter(brand_names)
+
+    sql = f"""
+        SELECT
+            CASE
+                WHEN d.age < 18 THEN '<18'
+                WHEN d.age < 41 THEN '18-40'
+                WHEN d.age < 61 THEN '41-60'
+                WHEN d.age < 76 THEN '61-75'
+                ELSE '75+'
+            END AS age_group,
+            COUNT(DISTINCT d.primaryid) AS report_count
+        FROM demo d
+        JOIN public.drug_cases dc ON dc.primaryid = d.primaryid AND dc.role_cod = 'PS'
+        WHERE d.age IS NOT NULL
+          AND d.age_cod IN ('YR', 'DEC')
+          AND d.age BETWEEN 0 AND 120
+          {brand_sql}
+        GROUP BY age_group
+        ORDER BY MIN(d.age)
+    """
+    return query_fdaers(sql, params or None)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_reporter_country(brand_names: list[str], limit: int = 10) -> pd.DataFrame:
+    brand_sql, params = _build_faers_brand_filter(brand_names)
+    params = {**params, "lim": limit}
+
+    sql = f"""
+        SELECT
+            COALESCE(d.reporter_country, 'Unknown') AS reporter_country,
+            COUNT(DISTINCT d.primaryid) AS report_count
+        FROM demo d
+        JOIN public.drug_cases dc ON dc.primaryid = d.primaryid AND dc.role_cod = 'PS'
+        WHERE 1=1
+          {brand_sql}
+        GROUP BY d.reporter_country
+        ORDER BY report_count DESC
+        LIMIT :lim
+    """
+    return query_fdaers(sql, params)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_reporter_type(brand_names: list[str]) -> pd.DataFrame:
+    brand_sql, params = _build_faers_brand_filter(brand_names)
+
+    sql = f"""
+        SELECT
+            COALESCE(d.occp_cod, 'Unknown') AS occp_cod,
+            COUNT(DISTINCT d.primaryid) AS report_count
+        FROM demo d
+        JOIN public.drug_cases dc ON dc.primaryid = d.primaryid AND dc.role_cod = 'PS'
+        WHERE 1=1
+          {brand_sql}
+        GROUP BY d.occp_cod
+        ORDER BY report_count DESC
+    """
+    df = query_fdaers(sql, params or None)
+    if not df.empty and "occp_cod" in df.columns:
+        df["reporter_type"] = df["occp_cod"].map(OCCP_LABELS).fillna(df["occp_cod"])
+    return df
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_ror_signals(brand_names: list[str], limit: int = 20) -> pd.DataFrame:
+    if not brand_names:
+        sql = """
+            SELECT brand_name, pt, ror
+            FROM public.top_n_ror
+            ORDER BY ror DESC
+            LIMIT :lim
+        """
+        params: dict = {"lim": limit}
+    else:
+        upper = [b.upper() for b in brand_names]
+        sql = """
+            SELECT brand_name, pt, ror
+            FROM public.top_n_ror
+            WHERE UPPER(brand_name) = ANY(:brands)
+            ORDER BY ror DESC
+            LIMIT :lim
+        """
+        params = {"brands": upper, "lim": limit}
+    return query_fdaers(sql, params)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_faers_detail_table(brand_names: list[str], limit: int = 500) -> pd.DataFrame:
+    brand_sql, params = _build_faers_brand_filter(brand_names)
+    params = {**params, "lim": limit}
+
+    sql = f"""
+        SELECT
+            d.primaryid,
+            dc.brand_name,
+            dc.generic_name,
+            r.pt AS reaction,
+            COALESCE(sm.soc, 'Unknown') AS soc,
+            STRING_AGG(DISTINCT o.outc_cod, ', ') AS outcomes,
+            d.age,
+            d.sex,
+            d.reporter_country,
+            d.fda_dt
+        FROM demo d
+        JOIN public.drug_cases dc ON dc.primaryid = d.primaryid AND dc.role_cod = 'PS'
+        JOIN reac r ON r.primaryid = d.primaryid
+        LEFT JOIN soc_map sm ON sm.english_pt = r.pt
+        LEFT JOIN outc o ON o.primaryid = d.primaryid
+        WHERE 1=1
+          {brand_sql}
+        GROUP BY
+            d.primaryid, dc.brand_name, dc.generic_name,
+            r.pt, sm.soc, d.age, d.sex, d.reporter_country, d.fda_dt
+        ORDER BY d.fda_dt DESC NULLS LAST
+        LIMIT :lim
+    """
+    return query_fdaers(sql, params)
