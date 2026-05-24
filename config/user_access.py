@@ -16,11 +16,11 @@ Keys per user:
                     Scores, PRO Overview, Trial Groups, Safety
 
   ── Disease area access (use ONE form, or omit both for all) ─────────────────
-  disease_areas         : list of allowed indication names      (inclusion mode)
-  disease_areas_exclude : list of indication names to REMOVE    (exclusion mode)
+  disease_areas         : list of allowed disease bucket display labels  (inclusion mode)
+  disease_areas_exclude : list of disease bucket display labels to REMOVE (exclusion mode)
                           If both are set, disease_areas (inclusion) wins.
-                          Values must match downcase_mesh_term in ctgov.browse_conditions.
-                          See catalogs/condition_sponsor_values.json for valid values.
+                          Values must be display labels from catalogs/disease_bucket_mapping.json
+                          (the JSON values, not the raw condition name keys).
 
   ── Drug class access (use ONE form, or omit both for all) ───────────────────
   drug_classes         : list of allowed ATC class names        (inclusion mode)
@@ -55,7 +55,7 @@ USER_ACCESS: dict[str, dict] = {
             "Trial Design",
             "Outcomes",
         ],
-        "disease_areas": ["breast neoplasms", "lung neoplasms"],
+        "disease_areas": ["Breast Cancer", "Lung Cancer"],
         "drug_classes":  None,
     },
     "sahil": {
@@ -74,19 +74,19 @@ USER_ACCESS: dict[str, dict] = {
     "ambi": {
         "display_name": "Ambi",
         "tabs": None,
-        "disease_areas": ["dermatitis, atopic","migraine disorders","pulmonary disease, chronic obstructive"],
+        "disease_areas": ["Atopic Dermatitis / Eczema", "Migraine", "Chronic Obstructive Pulmonary Disease"],
         "drug_classes":  None,
     },
     "User2": {
         "display_name": "User2",
         "tabs_exclude": ["Drug Pricing", "Market Access", "Scores","Trial Groups"],
-        "disease_areas_exclude": ["dermatitis, atopic","migraine disorders","pulmonary disease, chronic obstructive"],
+        "disease_areas_exclude": ["Atopic Dermatitis / Eczema", "Migraine", "Chronic Obstructive Pulmonary Disease"],
         "drug_classes":  None,
     },
     "User3": {
         "display_name": "User3",
         "tabs_exclude": ['Drug Pricing', 'Market Access', 'Scores'],
-        "disease_areas": ["dermatitis, atopic","migraine disorders","pulmonary disease, chronic obstructive"],
+        "disease_areas": ["Atopic Dermatitis / Eczema", "Migraine", "Chronic Obstructive Pulmonary Disease"],
         "drug_classes":  None,
     }
 }

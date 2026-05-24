@@ -2,12 +2,59 @@
 Filter state management: dataclass + Streamlit session_state helpers.
 """
 from __future__ import annotations
+from collections import defaultdict
 from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import List, Optional
 import json
 from pathlib import Path
 import streamlit as st
+
+
+# ── Disease bucket mapping helpers ───────────────────────────────────────────
+# Maps raw ctgov.conditions.name values ↔ human-readable display labels.
+# Loaded once per process; cached via lru_cache.
+
+@lru_cache(maxsize=1)
+def _load_disease_bucket_mapping() -> dict[str, str]:
+    """Return {raw_condition_name: display_label} from the catalog file."""
+    try:
+        return json.loads(
+            Path("catalogs/disease_bucket_mapping.json").read_text(encoding="utf-8")
+        )
+    except Exception:
+        return {}
+
+
+@lru_cache(maxsize=1)
+def _build_display_to_raw_map() -> dict[str, list[str]]:
+    """Return {display_label: [raw_condition_name, ...]} reverse mapping."""
+    mapping = _load_disease_bucket_mapping()
+    result: dict[str, list[str]] = defaultdict(list)  # type: ignore[assignment]
+    for raw, display in mapping.items():
+        result[display].append(raw)
+    return dict(result)
+
+
+def get_unique_display_labels() -> list[str]:
+    """Sorted list of unique display labels for the Condition dropdown."""
+    return sorted(set(_load_disease_bucket_mapping().values()))
+
+
+def get_raw_conditions_for_display_label(display_label: str) -> list[str]:
+    """
+    Return every raw ctgov.conditions.name that maps to *display_label*.
+    Falls back to [display_label] so callers can always build a valid IN clause.
+    """
+    if not display_label:
+        return []
+    reverse = _build_display_to_raw_map()
+    return reverse.get(display_label, [display_label])
+
+
+def get_display_label_for_raw_condition(raw_condition: str) -> str:
+    """Map a single raw condition name to its display label (identity fallback)."""
+    return _load_disease_bucket_mapping().get(raw_condition, raw_condition)
 
 
 @dataclass
@@ -149,10 +196,13 @@ def get_filters() -> FilterState:
     disease_areas         = ua.get("disease_areas")
     disease_areas_exclude = ua.get("disease_areas_exclude")
     if disease_areas is not None:
-        fs.allowed_indications = disease_areas
+        fs.allowed_indications = disease_areas  # already display labels
     elif disease_areas_exclude is not None:
         excl = {e.lower() for e in disease_areas_exclude}
-        fs.allowed_indications = [i for i in _load_full_indication_list() if i.lower() not in excl]
+        fs.allowed_indications = [
+            lbl for lbl in get_unique_display_labels()
+            if lbl.lower() not in excl
+        ]
     else:
         fs.allowed_indications = None
 

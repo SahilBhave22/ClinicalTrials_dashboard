@@ -29,21 +29,6 @@ from config.user_access import USER_ACCESS
 
 # ── Catalog loaders (no DB — reads the static JSON catalog) ──────────────────
 
-@lru_cache(maxsize=1)
-def _catalog_indications() -> tuple[str, ...]:
-    """All available indications from catalogs/condition_sponsor_values.json."""
-    try:
-        data = json.loads(
-            (Path(__file__).parent.parent / "catalogs/condition_sponsor_values.json")
-            .read_text(encoding="utf-8")
-        )
-        return tuple(
-            sorted([v.strip() for v in data.get("condition_values", "").split("|") if v.strip()])
-        )
-    except Exception as exc:
-        print(f"WARNING: could not load indication catalog: {exc}")
-        return ()
-
 
 @lru_cache(maxsize=1)
 def _catalog_atc_classes() -> tuple[str, ...]:
@@ -61,17 +46,44 @@ def _catalog_atc_classes() -> tuple[str, ...]:
         return ()
 
 
+@lru_cache(maxsize=1)
+def _load_disease_bucket_mapping() -> dict[str, str]:
+    """Return {raw_condition_name: display_label} from catalog."""
+    try:
+        return json.loads(
+            (Path(__file__).parent.parent / "catalogs/disease_bucket_mapping.json")
+            .read_text(encoding="utf-8")
+        )
+    except Exception as exc:
+        print(f"WARNING: could not load disease_bucket_mapping: {exc}")
+        return {}
+
+
+@lru_cache(maxsize=1)
+def _catalog_display_labels() -> tuple[str, ...]:
+    """All unique disease bucket display labels, sorted."""
+    return tuple(sorted(set(_load_disease_bucket_mapping().values())))
+
+
+def _get_raw_conditions_for_label(display_label: str) -> list[str]:
+    """Expand one display label to all matching raw condition names."""
+    reverse: dict[str, list[str]] = {}
+    for raw, disp in _load_disease_bucket_mapping().items():
+        reverse.setdefault(disp, []).append(raw)
+    return reverse.get(display_label, [display_label])
+
+
 def _resolve_disease_areas(cfg: dict) -> list[str] | None:
     """
-    Return the effective inclusion list for disease areas, supporting both
-    disease_areas (inclusion) and disease_areas_exclude (exclusion) config modes.
+    Return the effective inclusion list of disease bucket display labels, supporting
+    both disease_areas (inclusion) and disease_areas_exclude (exclusion) config modes.
     Returns None when no restriction applies (unrestricted / global).
     """
     if "disease_areas" in cfg and cfg["disease_areas"] is not None:
-        return cfg["disease_areas"]
+        return cfg["disease_areas"]  # already display labels
     if "disease_areas_exclude" in cfg and cfg["disease_areas_exclude"] is not None:
         excl = {e.lower() for e in cfg["disease_areas_exclude"]}
-        return [i for i in _catalog_indications() if i.lower() not in excl]
+        return [lbl for lbl in _catalog_display_labels() if lbl.lower() not in excl]
     return None
 
 
@@ -130,13 +142,15 @@ def build_scope_subquery(disease_areas: list[str] | None, drug_classes: list[str
     joins: list[str] = []
     wheres: list[str] = []
 
-    # Indication restriction — JOIN browse_conditions
+    # Indication restriction — expand display labels to raw condition names, then JOIN
     if disease_areas is not None:
+        raw_conditions: list[str] = []
+        for label in disease_areas:
+            raw_conditions.extend(_get_raw_conditions_for_label(label))
         joins.append(
-            "JOIN ctgov.browse_conditions bc ON bc.nct_id = dt.nct_id"
+            "JOIN ctgov.conditions cond ON cond.nct_id = dt.nct_id"
         )
-        wheres.append("bc.mesh_type = 'mesh-list'")
-        wheres.append(f"bc.downcase_mesh_term IN {_sql_list(disease_areas)}")
+        wheres.append(f"LOWER(cond.name) IN {_sql_list([v.lower() for v in raw_conditions])}")
 
     # ATC class restriction — JOIN drug_classes to resolve brands inline
     if drug_classes is not None:

@@ -30,6 +30,11 @@ BROWSE_CONDITIONS_MESH_TERM = "downcase_mesh_term"
 BROWSE_CONDITIONS_MESH_TYPE = "mesh_type"
 BROWSE_CONDITIONS_MESH_LIST = "mesh-list"
 
+# ── AACT DB – conditions (raw sponsor-entered condition names) ────────────────
+# Always use LOWER(c.name) in queries — downcase_name is not reliably populated.
+CONDITIONS_TABLE    = "ctgov.conditions"
+CONDITIONS_NAME_COL = "name"
+
 # ── Query limits ─────────────────────────────────────────────────────────────
 MAX_TABLE_ROWS     = 500
 MAX_NL_ROWS        = 200

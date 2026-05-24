@@ -29,7 +29,7 @@ from data.db import (
     query_fdaers,
 )
 from data.query_builder import QueryBuilder, _list_clause
-from utils.filters import FilterState
+from utils.filters import FilterState, get_raw_conditions_for_display_label
 from config.settings import (
     MAX_TABLE_ROWS, ANNUAL_PRICING_TABLE, HISTORICAL_PRICING_TABLE,
     DRUG_CLASSES_TABLE, DRUGS_ATC_COL, DRUGS_BRAND_COL, DRUG_INDICATIONS_TABLE, DRUGS_INDICATION_COL,
@@ -40,6 +40,27 @@ from config.settings import (
 _MESH_TO_INDICATION_MAP_PATH = (
     Path(__file__).resolve().parent.parent / "catalogs" / "mesh_to_indication_map.json"
 )
+
+
+def _pipeline_ind_clause(indication: str | None, params: dict, alias: str = "pt") -> str:
+    """
+    Return a WHERE fragment that scopes onco_pipeline_trials to a display label.
+
+    Expands the display label to raw ctgov.conditions names and returns an
+    nct_id IN (subquery) fragment — consistent with QueryBuilder logic.
+    Falls back to an empty string when indication is None.
+    """
+    if not indication:
+        return ""
+    raw = get_raw_conditions_for_display_label(indication)
+    placeholders = ", ".join(f":_pic_{i}" for i in range(len(raw)))
+    for i, v in enumerate(raw):
+        params[f"_pic_{i}"] = v.lower()
+    return (
+        f"AND {alias}.nct_id IN ("
+        f"SELECT DISTINCT c.nct_id FROM ctgov.conditions c "
+        f"WHERE LOWER(c.name) IN ({placeholders}))"
+    )
 
 
 @lru_cache(maxsize=1)
@@ -245,8 +266,8 @@ def get_filter_options(indication: str | None, atc_class: str | None) -> dict:
         return df.iloc[:, 0].dropna().tolist()
 
     # Brands in scope — computed first so we can use them to scope drug_indications.
-    # Important: constrain the dropdown to the relevant drugs resolved from the
-    # drugs DB / MeSH mapping so co-enrolled brands do not leak into the sidebar.
+    # When the indication is a raw conditions-table name (not in the MeSH map),
+    # relevant_brands will be empty; fall back to all brands in the nct_clause scope.
     relevant_brands = _resolve_relevant_brands_for_global_filters(indication, atc_class)
     brands_list: list[str] = []
     if indication or atc_class:
@@ -265,7 +286,17 @@ def get_filter_options(indication: str | None, atc_class: str | None) -> dict:
             """
             brands_list = _vals(query_aact(sql_brands, brand_params))
         else:
-            brands_list = []
+            # Mesh map returned nothing (raw condition name) — scope brands via nct_clause
+            sql_brands = f"""
+                SELECT DISTINCT dt.brand_name
+                FROM public.drug_trials dt
+                JOIN ctgov.studies s ON s.nct_id = dt.nct_id
+                WHERE {nct_clause}
+                  AND dt.brand_name IS NOT NULL
+                ORDER BY dt.brand_name
+                LIMIT 300
+            """
+            brands_list = _vals(query_aact(sql_brands, nct_params))
     else:
         sql_brands = f"""
             SELECT DISTINCT dt.brand_name
@@ -600,15 +631,13 @@ def get_country_distribution(filters: FilterState, limit: int = 20) -> pd.DataFr
 def get_pipeline_kpis(indication: str | None, sponsors: tuple[str, ...] = ()) -> dict:
     """Pipeline KPIs from onco_pipeline_trials, filtered by condition matching indication."""
     params: dict = {}
-    cond_where = ""
-    if indication:
-        cond_where = "WHERE LOWER(pt.condition) LIKE :ind_like"
-        params["ind_like"] = f"%{indication.lower()}%"
+    ind_frag = _pipeline_ind_clause(indication, params)
+    sp_frag = ""
     if sponsors:
         sp_params = {f"_sp{i}": s for i, s in enumerate(sponsors)}
-        sp_clause = "AND pt.sponsor_name IN (" + ", ".join(f":_sp{i}" for i in range(len(sponsors))) + ")"
-        cond_where = (cond_where + " " + sp_clause) if cond_where else ("WHERE " + sp_clause[4:])
+        sp_frag = "AND pt.sponsor_name IN (" + ", ".join(f":_sp{i}" for i in range(len(sponsors))) + ")"
         params.update(sp_params)
+    cond_where = ("WHERE TRUE " + ind_frag + " " + sp_frag).strip() if (ind_frag or sp_frag) else ""
 
     pros_where = cond_where.replace("WHERE", "WHERE", 1)  # same conditions apply to PRO query
     sql = f"""
@@ -642,9 +671,7 @@ def get_pipeline_kpis(indication: str | None, sponsors: tuple[str, ...] = ()) ->
 def get_pipeline_by_sponsor(indication: str | None, sponsors: tuple[str, ...] = (), limit: int = 20) -> pd.DataFrame:
     params: dict = {}
     cond_where = "WHERE pt.sponsor_name IS NOT NULL"
-    if indication:
-        cond_where += " AND LOWER(pt.condition) LIKE :ind_like"
-        params["ind_like"] = f"%{indication.lower()}%"
+    cond_where += " " + _pipeline_ind_clause(indication, params)
     if sponsors:
         sp_params = {f"_sp{i}": s for i, s in enumerate(sponsors)}
         cond_where += " AND pt.sponsor_name IN (" + ", ".join(f":_sp{i}" for i in range(len(sponsors))) + ")"
@@ -665,9 +692,7 @@ def get_pipeline_by_sponsor(indication: str | None, sponsors: tuple[str, ...] = 
 def get_pipeline_by_indication(indication: str | None, sponsors: tuple[str, ...] = (), limit: int = 25) -> pd.DataFrame:
     params: dict = {}
     cond_where = "WHERE pt.condition IS NOT NULL"
-    if indication:
-        cond_where += " AND LOWER(pt.condition) LIKE :ind_like"
-        params["ind_like"] = f"%{indication.lower()}%"
+    cond_where += " " + _pipeline_ind_clause(indication, params)
     if sponsors:
         sp_params = {f"_sp{i}": s for i, s in enumerate(sponsors)}
         cond_where += " AND pt.sponsor_name IN (" + ", ".join(f":_sp{i}" for i in range(len(sponsors))) + ")"
@@ -688,9 +713,7 @@ def get_pipeline_by_indication(indication: str | None, sponsors: tuple[str, ...]
 def get_pipeline_top_interventions(indication: str | None, sponsors: tuple[str, ...] = (), limit: int = 25) -> pd.DataFrame:
     params: dict = {}
     cond_where = "WHERE pt.intervention_name IS NOT NULL"
-    if indication:
-        cond_where += " AND LOWER(pt.condition) LIKE :ind_like"
-        params["ind_like"] = f"%{indication.lower()}%"
+    cond_where += " " + _pipeline_ind_clause(indication, params)
     if sponsors:
         sp_params = {f"_sp{i}": s for i, s in enumerate(sponsors)}
         cond_where += " AND pt.sponsor_name IN (" + ", ".join(f":_sp{i}" for i in range(len(sponsors))) + ")"
@@ -712,9 +735,7 @@ def get_pipeline_sponsor_indication_heatmap(indication: str | None, sponsors: tu
     """Return sponsor × condition counts for heatmap."""
     params: dict = {}
     cond_where = "WHERE pt.sponsor_name IS NOT NULL AND pt.condition IS NOT NULL"
-    if indication:
-        cond_where += " AND LOWER(pt.condition) LIKE :ind_like"
-        params["ind_like"] = f"%{indication.lower()}%"
+    cond_where += " " + _pipeline_ind_clause(indication, params)
     if sponsors:
         sp_params = {f"_sp{i}": s for i, s in enumerate(sponsors)}
         cond_where += " AND pt.sponsor_name IN (" + ", ".join(f":_sp{i}" for i in range(len(sponsors))) + ")"
@@ -748,10 +769,7 @@ def get_pipeline_sponsor_indication_heatmap(indication: str | None, sponsors: tu
 @st.cache_data(ttl=300, show_spinner=False)
 def get_pipeline_pro_usage(indication: str | None, sponsors: tuple[str, ...] = (), limit: int = 20) -> pd.DataFrame:
     params: dict = {}
-    ind_filter = ""
-    if indication:
-        ind_filter = "AND LOWER(pt.condition) LIKE :ind_like"
-        params["ind_like"] = f"%{indication.lower()}%"
+    ind_filter = _pipeline_ind_clause(indication, params)
     sp_filter = ""
     if sponsors:
         sp_params = {f"_sp{i}": s for i, s in enumerate(sponsors)}
@@ -774,10 +792,8 @@ def get_pipeline_pro_usage(indication: str | None, sponsors: tuple[str, ...] = (
 @st.cache_data(ttl=300, show_spinner=False)
 def get_pipeline_trials_table(indication: str | None, limit: int = MAX_TABLE_ROWS) -> pd.DataFrame:
     params: dict = {}
-    cond_where = ""
-    if indication:
-        cond_where = "WHERE LOWER(pt.condition) LIKE :ind_like"
-        params["ind_like"] = f"%{indication.lower()}%"
+    ind_frag = _pipeline_ind_clause(indication, params)
+    cond_where = ("WHERE TRUE " + ind_frag).strip() if ind_frag else ""
     sql = f"""
         SELECT
             pt.nct_id,
@@ -1570,6 +1586,80 @@ def get_score_by_drug(filters: FilterState, category: str,
     return query_aact(sql, params)
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def get_trials_with_outcomes(filters: FilterState) -> pd.DataFrame:
+    """
+    Distinct trials that have at least one numeric outcome measurement,
+    filtered by the active FilterState. Used for the trial comparison selector.
+
+    Uses EXISTS instead of JOINing through outcome_measurements to avoid
+    scanning the full measurements table; results_first_submitted_date IS NOT NULL
+    is a cheap indexed pre-filter that eliminates trials without posted results
+    before the EXISTS check runs.
+    """
+    qb = QueryBuilder(filters)
+    scope_clause, params = qb.study_scope_clause("s")
+    nct_where = f"AND {scope_clause}" if scope_clause else ""
+    sql = f"""
+        SELECT
+            s.nct_id,
+            s.brief_title,
+            (SELECT sp.name
+             FROM ctgov.sponsors sp
+             WHERE sp.nct_id = s.nct_id
+               AND sp.lead_or_collaborator = 'lead'
+             LIMIT 1)        AS lead_sponsor,
+            s.phase,
+            s.overall_status,
+            s.enrollment
+        FROM ctgov.studies s
+        WHERE s.results_first_submitted_date IS NOT NULL
+          AND EXISTS (
+              SELECT 1
+              FROM ctgov.outcomes o
+              JOIN ctgov.outcome_measurements om
+                ON om.outcome_id::text = o.id::text
+              WHERE o.nct_id = s.nct_id
+                AND om.param_value_num IS NOT NULL
+          )
+          {nct_where}
+        ORDER BY s.start_date DESC NULLS LAST
+        LIMIT 500
+    """
+    return query_aact(sql, params)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def get_outcome_data_for_trial(nct_id: str) -> pd.DataFrame:
+    """
+    Numeric outcome measurements for a single trial.
+
+    Performance notes:
+    - Drive from ctgov.outcomes (small, indexed on nct_id) rather than the huge
+      outcome_measurements table.
+    - Cast only the integer PK side of each join (o.id::text, rg.id::text) so
+      the varchar FK columns (om.outcome_id, om.result_group_id) remain bare and
+      the planner can use their indexes.  Casting both sides (the previous
+      approach) wraps the FK in a function and forces a sequential scan.
+    - TTL raised to 600 s — per-trial data is stable within a session.
+    """
+    sql = """
+        SELECT
+            om.title          AS outcome_title,
+            om.units,
+            om.param_type,
+            om.param_value_num,
+            rg.title          AS group_name
+        FROM ctgov.outcomes o
+        JOIN ctgov.outcome_measurements om ON om.outcome_id = o.id
+        LEFT JOIN ctgov.result_groups rg   ON om.result_group_id = rg.id
+        WHERE o.nct_id = :nct_id
+          AND om.param_value_num IS NOT NULL
+        ORDER BY om.title, rg.title
+    """
+    return query_aact(sql, {"nct_id": nct_id})
+
+
 # ════════════════════════════════════════════════════════════════════════════
 #  PRO OVERVIEW
 # ════════════════════════════════════════════════════════════════════════════
@@ -2081,22 +2171,16 @@ def get_ae_detail_table(filters: FilterState,
 @st.cache_data(ttl=3600, show_spinner=False)
 def get_indication_options() -> list[str]:
     """
-    Returns distinct MeSH mesh_term values (mesh-list type only) from
-    ctgov.browse_conditions, scoped to trials present in public.drug_trials.
-    These are the options for the global Indication filter.
+    Returns distinct condition names from ctgov.conditions, scoped to trials
+    present in public.drug_trials. These are the options for the global
+    Indication filter.
     """
-    from config.settings import (
-        BROWSE_CONDITIONS_TABLE,
-        BROWSE_CONDITIONS_MESH_TERM,
-        BROWSE_CONDITIONS_MESH_TYPE,
-        BROWSE_CONDITIONS_MESH_LIST,
-    )
+    from config.settings import CONDITIONS_TABLE, CONDITIONS_NAME_COL
     sql = f"""
-        SELECT DISTINCT bc.{BROWSE_CONDITIONS_MESH_TERM}
-        FROM {BROWSE_CONDITIONS_TABLE} bc
-        JOIN public.drug_trials dt ON dt.nct_id = bc.nct_id
-        WHERE bc.{BROWSE_CONDITIONS_MESH_TYPE} = '{BROWSE_CONDITIONS_MESH_LIST}'
-          AND bc.{BROWSE_CONDITIONS_MESH_TERM} IS NOT NULL
+        SELECT DISTINCT LOWER(c.{CONDITIONS_NAME_COL})
+        FROM {CONDITIONS_TABLE} c
+        JOIN public.drug_trials dt ON dt.nct_id = c.nct_id
+        WHERE c.{CONDITIONS_NAME_COL} IS NOT NULL
         ORDER BY 1
         LIMIT 3000
     """
@@ -2135,8 +2219,7 @@ def get_brand_options_from_drugs(indication: str | None, atc_class: str | None) 
     """
     from config.settings import (
         DRUG_CLASSES_TABLE, DRUGS_BRAND_COL, DRUGS_ATC_COL,
-        BROWSE_CONDITIONS_TABLE, BROWSE_CONDITIONS_MESH_TERM,
-        BROWSE_CONDITIONS_MESH_TYPE, BROWSE_CONDITIONS_MESH_LIST,
+        CONDITIONS_TABLE, CONDITIONS_NAME_COL,
     )
 
     if indication and atc_class:
@@ -2153,16 +2236,15 @@ def get_brand_options_from_drugs(indication: str | None, atc_class: str | None) 
         atc_brands = atc_df["brand_name"].dropna().tolist() if not atc_df.empty else []
         if not atc_brands:
             return []
-        # Step 2: intersect with browse_conditions scope in AACT
+        # Step 2: intersect with conditions scope in AACT
         ph = ", ".join(f":bn_{i}" for i in range(len(atc_brands)))
         params: dict = {f"bn_{i}": b for i, b in enumerate(atc_brands)}
-        params["bc_ind"] = indication
+        params["bc_ind"] = indication.lower()
         sql = f"""
             SELECT DISTINCT dt.brand_name
             FROM public.drug_trials dt
-            JOIN {BROWSE_CONDITIONS_TABLE} bc ON bc.nct_id = dt.nct_id
-            WHERE bc.{BROWSE_CONDITIONS_MESH_TYPE} = '{BROWSE_CONDITIONS_MESH_LIST}'
-              AND bc.{BROWSE_CONDITIONS_MESH_TERM} = :bc_ind
+            JOIN {CONDITIONS_TABLE} c ON c.nct_id = dt.nct_id
+            WHERE LOWER(c.{CONDITIONS_NAME_COL}) = :bc_ind
               AND dt.brand_name IN ({ph})
               AND dt.brand_name IS NOT NULL
             ORDER BY 1 LIMIT 300
@@ -2170,17 +2252,16 @@ def get_brand_options_from_drugs(indication: str | None, atc_class: str | None) 
         df = query_aact(sql, params)
 
     elif indication:
-        # Scope via browse_conditions JOIN drug_trials in AACT
+        # Scope via conditions JOIN drug_trials in AACT
         sql = f"""
             SELECT DISTINCT dt.brand_name
             FROM public.drug_trials dt
-            JOIN {BROWSE_CONDITIONS_TABLE} bc ON bc.nct_id = dt.nct_id
-            WHERE bc.{BROWSE_CONDITIONS_MESH_TYPE} = '{BROWSE_CONDITIONS_MESH_LIST}'
-              AND bc.{BROWSE_CONDITIONS_MESH_TERM} = :bc_ind
+            JOIN {CONDITIONS_TABLE} c ON c.nct_id = dt.nct_id
+            WHERE LOWER(c.{CONDITIONS_NAME_COL}) = :bc_ind
               AND dt.brand_name IS NOT NULL
             ORDER BY 1 LIMIT 300
         """
-        df = query_aact(sql, {"bc_ind": indication})
+        df = query_aact(sql, {"bc_ind": indication.lower()})
 
     elif atc_class:
         from data.db import query_drugs

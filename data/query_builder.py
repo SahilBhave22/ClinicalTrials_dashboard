@@ -16,17 +16,15 @@ from __future__ import annotations
 from typing import List, Optional, Tuple
 import streamlit as st
 
-from utils.filters import FilterState
+from utils.filters import FilterState, get_raw_conditions_for_display_label
 from config.settings import (
     DRUG_INDICATIONS_TABLE,
     DRUG_CLASSES_TABLE,
     DRUGS_BRAND_COL,
     DRUGS_INDICATION_COL,
     DRUGS_ATC_COL,
-    BROWSE_CONDITIONS_TABLE,
-    BROWSE_CONDITIONS_MESH_TERM,
-    BROWSE_CONDITIONS_MESH_TYPE,
-    BROWSE_CONDITIONS_MESH_LIST,
+    CONDITIONS_TABLE,
+    CONDITIONS_NAME_COL,
 )
 
 
@@ -279,20 +277,30 @@ class QueryBuilder:
         needs_bc_join = indication or allowed_indications is not None
         join_clause = ""
         if needs_bc_join:
-            join_clause = f"JOIN {BROWSE_CONDITIONS_TABLE} bc ON bc.nct_id = dt.nct_id"
-            where_parts.append(
-                f"bc.{BROWSE_CONDITIONS_MESH_TYPE} = '{BROWSE_CONDITIONS_MESH_LIST}'"
-            )
-            # Sidebar selection (single value)
+            join_clause = f"JOIN {CONDITIONS_TABLE} c ON c.nct_id = dt.nct_id"
+            # Sidebar selection is a display label — resolve to all matching raw
+            # condition names and use an IN clause (covers many-to-one mappings).
             if indication:
-                where_parts.append(f"bc.{BROWSE_CONDITIONS_MESH_TERM} = :bc_indication")
-                params["bc_indication"] = indication
-            # Per-user allowlist (enforced regardless of sidebar)
-            if allowed_indications is not None:
+                raw_conditions = get_raw_conditions_for_display_label(indication)
                 where_parts.append(
                     _list_clause(
-                        f"bc.{BROWSE_CONDITIONS_MESH_TERM}",
-                        allowed_indications,
+                        f"LOWER(c.{CONDITIONS_NAME_COL})",
+                        [r.lower() for r in raw_conditions],
+                        params,
+                        "bc",
+                    )
+                )
+            # Per-user allowlist (display labels → expanded to raw condition names)
+            if allowed_indications is not None:
+                if not allowed_indications:
+                    return f"{alias}.nct_id IN (SELECT NULL WHERE FALSE)", {}
+                ua_raw: list[str] = []
+                for lbl in allowed_indications:
+                    ua_raw.extend(get_raw_conditions_for_display_label(lbl))
+                where_parts.append(
+                    _list_clause(
+                        f"LOWER(c.{CONDITIONS_NAME_COL})",
+                        [v.lower() for v in ua_raw],
                         params,
                         "ua_ind",
                     )
@@ -625,23 +633,36 @@ class QueryBuilder:
             bn_frag = _list_clause("dt.brand_name", effective_brands, params, "bn")
             where_parts.append(bn_frag)
 
-        # ── Indication (sidebar + per-user allowlist) via browse_conditions JOIN ─
-        needs_bc_join = indication or allowed_indications is not None
-        if needs_bc_join:
+        # ── Indication (sidebar + per-user allowlist) via ctgov.conditions JOIN ──
+        # Uses ctgov.conditions.name (raw condition names) to match the catalog
+        # values selected in the sidebar — consistent with nct_subquery_clause.
+        needs_cond_join = indication or allowed_indications is not None
+        if needs_cond_join:
             join_parts.append(
-                f"JOIN {BROWSE_CONDITIONS_TABLE} bc ON bc.nct_id = dt.nct_id"
+                f"JOIN {CONDITIONS_TABLE} cond ON cond.nct_id = dt.nct_id"
             )
-            where_parts.append(
-                f"bc.{BROWSE_CONDITIONS_MESH_TYPE} = '{BROWSE_CONDITIONS_MESH_LIST}'"
-            )
+            # Resolve display label → raw condition names (IN clause, same logic as
+            # nct_subquery_clause so AE and non-AE queries scope identically).
             if indication:
-                where_parts.append(f"bc.{BROWSE_CONDITIONS_MESH_TERM} = :bc_indication")
-                params["bc_indication"] = indication
-            if allowed_indications is not None:
+                raw_conditions = get_raw_conditions_for_display_label(indication)
                 where_parts.append(
                     _list_clause(
-                        f"bc.{BROWSE_CONDITIONS_MESH_TERM}",
-                        allowed_indications,
+                        f"LOWER(cond.{CONDITIONS_NAME_COL})",
+                        [r.lower() for r in raw_conditions],
+                        params,
+                        "bc",
+                    )
+                )
+            if allowed_indications is not None:
+                if not allowed_indications:
+                    return "WITH scope_nct AS (SELECT nct_id FROM ctgov.studies WHERE FALSE)", {}
+                ua_raw: list[str] = []
+                for lbl in allowed_indications:
+                    ua_raw.extend(get_raw_conditions_for_display_label(lbl))
+                where_parts.append(
+                    _list_clause(
+                        f"LOWER(cond.{CONDITIONS_NAME_COL})",
+                        [v.lower() for v in ua_raw],
                         params,
                         "ua_ind",
                     )
