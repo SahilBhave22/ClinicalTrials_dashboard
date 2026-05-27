@@ -25,6 +25,7 @@ from data.repository import (
     get_pipeline_sponsor_indication_heatmap,
     get_pipeline_pro_usage,
     get_pipeline_trials_table,
+    get_pipeline_by_class,
 )
 
 
@@ -38,39 +39,49 @@ def render(filters: FilterState) -> None:
     filter_summary_bar(filters)
     pipeline_data_note()
 
-    ind = filters.indication_name
+    bucket = filters.indication_name
     sponsors = tuple(filters.sponsor)
 
+    # ── Inline pipeline class filter ───────────────────────────────────────────
+    _PIPELINE_CLASSES = ["novel drug", "new indication", "new population"]
+    selected_classes = st.multiselect(
+        "Pipeline Class",
+        options=_PIPELINE_CLASSES,
+        default=[],
+        key="pipeline_class_filter",
+    )
+    pipeline_classes = tuple(selected_classes)
+
     with st.spinner("Loading pipeline data..."):
-        kpis = get_pipeline_kpis(ind, sponsors)
+        kpis = get_pipeline_kpis(bucket, sponsors, pipeline_classes)
 
     # ── KPIs ──────────────────────────────────────────────────────────────────
     kpi_row([
         {"label": "Pipeline Trials",        "value": kpis["pipeline_trials"],    "icon": "🔬"},
         {"label": "Unique Assets",           "value": kpis["unique_assets"],      "icon": "💊"},
         {"label": "Active Sponsors",         "value": kpis["active_sponsors"],    "icon": "🏢"},
-        {"label": "Indications Covered",     "value": kpis["indications_covered"],"icon": "🎯"},
+        {"label": "Conditions Covered",       "value": kpis["indications_covered"],"icon": "🎯"},
         {"label": "With Planned PROs",       "value": kpis["with_pros"],          "icon": "👤"},
     ])
     st.markdown("<br>", unsafe_allow_html=True)
 
-    if not filters.has_any_filter():
+    if not filters.has_any_filter() and not pipeline_classes:
         filter_required_callout(
             "Please select at least one filter in the sidebar "
-            "(indication, drug class, sponsor, phase, etc.) to view the charts."
+            "(indication, drug class, sponsor, phase, etc.) or a pipeline class above to view the charts."
         )
         return
 
     with st.spinner("Loading charts..."):
-        sp_df   = get_pipeline_by_sponsor(ind, sponsors, limit=20)
-        ind_df  = get_pipeline_by_indication(ind, sponsors, limit=25)
-        intv_df = get_pipeline_top_interventions(ind, sponsors, limit=25)
-        pro_df  = get_pipeline_pro_usage(ind, sponsors, limit=20)
+        sp_df   = get_pipeline_by_sponsor(bucket, sponsors, pipeline_classes, limit=20)
+        ind_df  = get_pipeline_by_indication(bucket, sponsors, pipeline_classes, limit=25)
+        intv_df = get_pipeline_top_interventions(bucket, sponsors, pipeline_classes, limit=25)
+        pro_df  = get_pipeline_pro_usage(bucket, sponsors, pipeline_classes, limit=20)
 
     # ── Tabs ──────────────────────────────────────────────────────────────────
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
-        "🏢 By Sponsor", "🎯 By Indication", "💊 Interventions",
-        "🗺️ Sponsor × Indication", "👤 PRO Usage"
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+        "🏢 By Sponsor", "🎯 By Condition", "💊 Interventions",
+        "🗺️ Sponsor × Condition", "👤 PRO Usage", "📋 By Class",
     ])
 
     with tab1:
@@ -88,15 +99,15 @@ def render(filters: FilterState) -> None:
 
     with tab2:
         if ind_df.empty:
-            no_data_callout("indications")
+            no_data_callout("conditions")
         else:
             c1, c2 = st.columns(2)
             with c1:
                 chart_tile(bar_chart(ind_df, "condition", "trial_count",
-                                     orientation="h", title="Pipeline Trials by Indication"))
+                                     orientation="h", title="Pipeline Trials by Condition"))
             with c2:
                 chart_tile(treemap_chart(ind_df, path=["condition"],
-                                         values="trial_count", title="Indication Treemap"))
+                                         values="trial_count", title="Condition Treemap"))
 
     with tab3:
         if intv_df.empty:
@@ -107,12 +118,12 @@ def render(filters: FilterState) -> None:
             csv_download_button(intv_df, "pipeline_interventions.csv")
 
     with tab4:
-        heat_df = get_pipeline_sponsor_indication_heatmap(ind, sponsors)
+        heat_df = get_pipeline_sponsor_indication_heatmap(bucket, sponsors, pipeline_classes)
         if not heat_df.empty:
             pivot = sponsor_indication_pivot(heat_df)
             if not pivot.empty:
-                chart_tile(heatmap_chart(pivot, title="Sponsor × Indication Pipeline Heatmap",
-                                         x_label="Indication", y_label="Sponsor"))
+                chart_tile(heatmap_chart(pivot, title="Sponsor × Condition Pipeline Heatmap",
+                                         x_label="Condition", y_label="Sponsor"))
         else:
             no_data_callout("heatmap")
 
@@ -123,10 +134,24 @@ def render(filters: FilterState) -> None:
             chart_tile(bar_chart(pro_df, "instrument_name", "trial_count",
                                  orientation="h", title="Pipeline PRO Instrument Usage"))
 
+    with tab6:
+        class_df = get_pipeline_by_class(bucket, sponsors, pipeline_classes)
+        if class_df.empty:
+            no_data_callout("pipeline classes")
+        else:
+            c1, c2 = st.columns(2)
+            with c1:
+                chart_tile(donut_chart(class_df, "pipeline_class", "trial_count",
+                                       title="Pipeline Trials by Class"))
+            with c2:
+                chart_tile(bar_chart(class_df, "pipeline_class", "trial_count",
+                                     orientation="h", title="Trial Count by Class"))
+            csv_download_button(class_df, "pipeline_by_class.csv")
+
     # ── Trial Table ───────────────────────────────────────────────────────────
     st.markdown("---")
     st.markdown("#### Pipeline Trial Details")
-    trials_df = get_pipeline_trials_table(ind)
+    trials_df = get_pipeline_trials_table(bucket, pipeline_classes)
     if filters.sponsor:
         trials_df = trials_df[trials_df["sponsor_name"].isin(filters.sponsor)]
     if not trials_df.empty:

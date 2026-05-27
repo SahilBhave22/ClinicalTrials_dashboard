@@ -73,7 +73,7 @@ def build_pipeline_context(
         },
         "sections": {
             "Top Sponsors (by Pipeline Trials)": _df_to_md(sp_df,   ["sponsor", "pipeline_trials", "unique_assets"], _TABLE_LIMIT),
-            "Top Indications":                   _df_to_md(ind_df,  ["condition", "trial_count"],                    _TABLE_LIMIT),
+            "Top Conditions":                     _df_to_md(ind_df,  ["condition", "trial_count"],                    _TABLE_LIMIT),
             "Top Interventions":                 _df_to_md(intv_df, ["intervention", "trial_count"],                 _TABLE_LIMIT),
             "PRO Instrument Usage":              _df_to_md(pro_df,  ["instrument_name", "trial_count"],              15),
             "Trial List Overview":               _summarise_trials(trials_df),

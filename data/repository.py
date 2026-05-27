@@ -29,7 +29,7 @@ from data.db import (
     query_fdaers,
 )
 from data.query_builder import QueryBuilder, _list_clause
-from utils.filters import FilterState, get_raw_conditions_for_display_label
+from utils.filters import FilterState
 from config.settings import (
     MAX_TABLE_ROWS, ANNUAL_PRICING_TABLE, HISTORICAL_PRICING_TABLE,
     DRUG_CLASSES_TABLE, DRUGS_ATC_COL, DRUGS_BRAND_COL, DRUG_INDICATIONS_TABLE, DRUGS_INDICATION_COL,
@@ -41,26 +41,6 @@ _MESH_TO_INDICATION_MAP_PATH = (
     Path(__file__).resolve().parent.parent / "catalogs" / "mesh_to_indication_map.json"
 )
 
-
-def _pipeline_ind_clause(indication: str | None, params: dict, alias: str = "pt") -> str:
-    """
-    Return a WHERE fragment that scopes onco_pipeline_trials to a display label.
-
-    Expands the display label to raw ctgov.conditions names and returns an
-    nct_id IN (subquery) fragment — consistent with QueryBuilder logic.
-    Falls back to an empty string when indication is None.
-    """
-    if not indication:
-        return ""
-    raw = get_raw_conditions_for_display_label(indication)
-    placeholders = ", ".join(f":_pic_{i}" for i in range(len(raw)))
-    for i, v in enumerate(raw):
-        params[f"_pic_{i}"] = v.lower()
-    return (
-        f"AND {alias}.nct_id IN ("
-        f"SELECT DISTINCT c.nct_id FROM ctgov.conditions c "
-        f"WHERE LOWER(c.name) IN ({placeholders}))"
-    )
 
 
 @lru_cache(maxsize=1)
@@ -627,33 +607,53 @@ def get_country_distribution(filters: FilterState, limit: int = 20) -> pd.DataFr
 #  PIPELINE LANDSCAPE
 # ════════════════════════════════════════════════════════════════════════════
 
-@st.cache_data(ttl=300, show_spinner=False)
-def get_pipeline_kpis(indication: str | None, sponsors: tuple[str, ...] = ()) -> dict:
-    """Pipeline KPIs from onco_pipeline_trials, filtered by condition matching indication."""
-    params: dict = {}
-    ind_frag = _pipeline_ind_clause(indication, params)
-    sp_frag = ""
+def _pipeline_where(
+    bucket: str | None,
+    sponsors: tuple[str, ...],
+    pipeline_classes: tuple[str, ...],
+    params: dict,
+    base: str = "WHERE TRUE",
+) -> str:
+    """Build a WHERE clause fragment for pipeline_trials queries."""
+    clause = base
+    clause += " AND pt.pipeline_class NOT IN ('lifecycle study', 'unclassified')"
+    if bucket:
+        clause += " AND pt.trial_bucket = :bucket"
+        params["bucket"] = bucket
     if sponsors:
         sp_params = {f"_sp{i}": s for i, s in enumerate(sponsors)}
-        sp_frag = "AND pt.sponsor_name IN (" + ", ".join(f":_sp{i}" for i in range(len(sponsors))) + ")"
+        clause += " AND pt.sponsor_name IN (" + ", ".join(f":_sp{i}" for i in range(len(sponsors))) + ")"
         params.update(sp_params)
-    cond_where = ("WHERE TRUE " + ind_frag + " " + sp_frag).strip() if (ind_frag or sp_frag) else ""
+    if pipeline_classes:
+        pc_params = {f"_pc{i}": c for i, c in enumerate(pipeline_classes)}
+        clause += " AND pt.pipeline_class IN (" + ", ".join(f":_pc{i}" for i in range(len(pipeline_classes))) + ")"
+        params.update(pc_params)
+    return clause
 
-    pros_where = cond_where.replace("WHERE", "WHERE", 1)  # same conditions apply to PRO query
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_pipeline_kpis(
+    bucket: str | None,
+    sponsors: tuple[str, ...] = (),
+    pipeline_classes: tuple[str, ...] = (),
+) -> dict:
+    """Pipeline KPIs from pipeline_trials, filtered by trial_bucket direct match."""
+    params: dict = {}
+    cond_where = _pipeline_where(bucket, sponsors, pipeline_classes, params)
     sql = f"""
         SELECT
             COUNT(DISTINCT pt.nct_id)            AS pipeline_trials,
             COUNT(DISTINCT pt.intervention_name) AS unique_assets,
             COUNT(DISTINCT pt.sponsor_name)      AS active_sponsors,
-            COUNT(DISTINCT pt.condition)         AS indications_covered
-        FROM public.onco_pipeline_trials pt
+            COUNT(DISTINCT pt.trial_bucket)      AS indications_covered
+        FROM public.pipeline_trials pt
         {cond_where}
     """
     sql_pros = f"""
         SELECT COUNT(DISTINCT pp.nct_id) AS with_pros
         FROM public.onco_pipeline_design_outcomes_pro pp
-        JOIN public.onco_pipeline_trials pt ON pt.nct_id = pp.nct_id
-        {pros_where}
+        JOIN public.pipeline_trials pt ON pt.nct_id = pp.nct_id
+        {cond_where}
     """
     df     = query_aact(sql,      params)
     pro_df = query_aact(sql_pros, params)
@@ -668,20 +668,21 @@ def get_pipeline_kpis(indication: str | None, sponsors: tuple[str, ...] = ()) ->
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def get_pipeline_by_sponsor(indication: str | None, sponsors: tuple[str, ...] = (), limit: int = 20) -> pd.DataFrame:
+def get_pipeline_by_sponsor(
+    bucket: str | None,
+    sponsors: tuple[str, ...] = (),
+    pipeline_classes: tuple[str, ...] = (),
+    limit: int = 20,
+) -> pd.DataFrame:
     params: dict = {}
-    cond_where = "WHERE pt.sponsor_name IS NOT NULL"
-    cond_where += " " + _pipeline_ind_clause(indication, params)
-    if sponsors:
-        sp_params = {f"_sp{i}": s for i, s in enumerate(sponsors)}
-        cond_where += " AND pt.sponsor_name IN (" + ", ".join(f":_sp{i}" for i in range(len(sponsors))) + ")"
-        params.update(sp_params)
+    cond_where = _pipeline_where(bucket, sponsors, pipeline_classes, params,
+                                  base="WHERE pt.sponsor_name IS NOT NULL")
     sql = f"""
         SELECT
             pt.sponsor_name              AS sponsor,
             COUNT(DISTINCT pt.nct_id)   AS pipeline_trials,
             COUNT(DISTINCT pt.intervention_name) AS unique_assets
-        FROM public.onco_pipeline_trials pt
+        FROM public.pipeline_trials pt
         {cond_where}
         GROUP BY 1 ORDER BY 2 DESC LIMIT {limit}
     """
@@ -689,20 +690,21 @@ def get_pipeline_by_sponsor(indication: str | None, sponsors: tuple[str, ...] = 
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def get_pipeline_by_indication(indication: str | None, sponsors: tuple[str, ...] = (), limit: int = 25) -> pd.DataFrame:
+def get_pipeline_by_indication(
+    bucket: str | None,
+    sponsors: tuple[str, ...] = (),
+    pipeline_classes: tuple[str, ...] = (),
+    limit: int = 25,
+) -> pd.DataFrame:
     params: dict = {}
-    cond_where = "WHERE pt.condition IS NOT NULL"
-    cond_where += " " + _pipeline_ind_clause(indication, params)
-    if sponsors:
-        sp_params = {f"_sp{i}": s for i, s in enumerate(sponsors)}
-        cond_where += " AND pt.sponsor_name IN (" + ", ".join(f":_sp{i}" for i in range(len(sponsors))) + ")"
-        params.update(sp_params)
+    cond_where = _pipeline_where(bucket, sponsors, pipeline_classes, params,
+                                  base="WHERE pt.trial_bucket IS NOT NULL")
     sql = f"""
         SELECT
-            pt.condition                 AS condition,
+            pt.trial_bucket              AS condition,
             COUNT(DISTINCT pt.nct_id)   AS trial_count,
             COUNT(DISTINCT pt.sponsor_name) AS sponsors
-        FROM public.onco_pipeline_trials pt
+        FROM public.pipeline_trials pt
         {cond_where}
         GROUP BY 1 ORDER BY 2 DESC LIMIT {limit}
     """
@@ -710,20 +712,21 @@ def get_pipeline_by_indication(indication: str | None, sponsors: tuple[str, ...]
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def get_pipeline_top_interventions(indication: str | None, sponsors: tuple[str, ...] = (), limit: int = 25) -> pd.DataFrame:
+def get_pipeline_top_interventions(
+    bucket: str | None,
+    sponsors: tuple[str, ...] = (),
+    pipeline_classes: tuple[str, ...] = (),
+    limit: int = 25,
+) -> pd.DataFrame:
     params: dict = {}
-    cond_where = "WHERE pt.intervention_name IS NOT NULL"
-    cond_where += " " + _pipeline_ind_clause(indication, params)
-    if sponsors:
-        sp_params = {f"_sp{i}": s for i, s in enumerate(sponsors)}
-        cond_where += " AND pt.sponsor_name IN (" + ", ".join(f":_sp{i}" for i in range(len(sponsors))) + ")"
-        params.update(sp_params)
+    cond_where = _pipeline_where(bucket, sponsors, pipeline_classes, params,
+                                  base="WHERE pt.intervention_name IS NOT NULL")
     sql = f"""
         SELECT
             pt.intervention_name         AS intervention,
             COUNT(DISTINCT pt.nct_id)   AS trial_count,
             COUNT(DISTINCT pt.sponsor_name) AS sponsors
-        FROM public.onco_pipeline_trials pt
+        FROM public.pipeline_trials pt
         {cond_where}
         GROUP BY 1 ORDER BY 2 DESC LIMIT {limit}
     """
@@ -731,35 +734,38 @@ def get_pipeline_top_interventions(indication: str | None, sponsors: tuple[str, 
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def get_pipeline_sponsor_indication_heatmap(indication: str | None, sponsors: tuple[str, ...] = ()) -> pd.DataFrame:
-    """Return sponsor × condition counts for heatmap."""
+def get_pipeline_sponsor_indication_heatmap(
+    bucket: str | None,
+    sponsors: tuple[str, ...] = (),
+    pipeline_classes: tuple[str, ...] = (),
+) -> pd.DataFrame:
+    """Return sponsor × bucket counts for heatmap."""
     params: dict = {}
-    cond_where = "WHERE pt.sponsor_name IS NOT NULL AND pt.condition IS NOT NULL"
-    cond_where += " " + _pipeline_ind_clause(indication, params)
-    if sponsors:
-        sp_params = {f"_sp{i}": s for i, s in enumerate(sponsors)}
-        cond_where += " AND pt.sponsor_name IN (" + ", ".join(f":_sp{i}" for i in range(len(sponsors))) + ")"
-        params.update(sp_params)
+    cond_where = _pipeline_where(
+        bucket, sponsors, pipeline_classes, params,
+        base="WHERE pt.sponsor_name IS NOT NULL AND pt.trial_bucket IS NOT NULL",
+    )
+    bare = cond_where.replace("pt.", "")
     sql = f"""
         WITH ranked_sponsors AS (
             SELECT sponsor_name, COUNT(DISTINCT nct_id) AS cnt
-            FROM public.onco_pipeline_trials
-            {cond_where.replace('pt.', '')}
+            FROM public.pipeline_trials
+            {bare}
             GROUP BY 1 ORDER BY 2 DESC LIMIT 15
         ),
-        ranked_conditions AS (
-            SELECT condition, COUNT(DISTINCT nct_id) AS cnt
-            FROM public.onco_pipeline_trials
-            {cond_where.replace('pt.', '')}
+        ranked_buckets AS (
+            SELECT trial_bucket, COUNT(DISTINCT nct_id) AS cnt
+            FROM public.pipeline_trials
+            {bare}
             GROUP BY 1 ORDER BY 2 DESC LIMIT 15
         )
         SELECT
             pt.sponsor_name  AS sponsor,
-            pt.condition     AS condition,
+            pt.trial_bucket  AS condition,
             COUNT(DISTINCT pt.nct_id) AS trial_count
-        FROM public.onco_pipeline_trials pt
+        FROM public.pipeline_trials pt
         JOIN ranked_sponsors rs ON rs.sponsor_name = pt.sponsor_name
-        JOIN ranked_conditions rc ON rc.condition = pt.condition
+        JOIN ranked_buckets rb ON rb.trial_bucket = pt.trial_bucket
         {cond_where}
         GROUP BY 1, 2
     """
@@ -767,49 +773,73 @@ def get_pipeline_sponsor_indication_heatmap(indication: str | None, sponsors: tu
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def get_pipeline_pro_usage(indication: str | None, sponsors: tuple[str, ...] = (), limit: int = 20) -> pd.DataFrame:
+def get_pipeline_pro_usage(
+    bucket: str | None,
+    sponsors: tuple[str, ...] = (),
+    pipeline_classes: tuple[str, ...] = (),
+    limit: int = 20,
+) -> pd.DataFrame:
     params: dict = {}
-    ind_filter = _pipeline_ind_clause(indication, params)
-    sp_filter = ""
-    if sponsors:
-        sp_params = {f"_sp{i}": s for i, s in enumerate(sponsors)}
-        sp_filter = "AND pt.sponsor_name IN (" + ", ".join(f":_sp{i}" for i in range(len(sponsors))) + ")"
-        params.update(sp_params)
+    cond_where = _pipeline_where(bucket, sponsors, pipeline_classes, params)
+    cond_where += " AND pp.instrument_name IS NOT NULL"
     sql = f"""
         SELECT
             pp.instrument_name,
             COUNT(DISTINCT pp.nct_id) AS trial_count
         FROM public.onco_pipeline_design_outcomes_pro pp
-        JOIN public.onco_pipeline_trials pt ON pt.nct_id = pp.nct_id
-        WHERE pp.instrument_name IS NOT NULL
-          {ind_filter}
-          {sp_filter}
+        JOIN public.pipeline_trials pt ON pt.nct_id = pp.nct_id
+        {cond_where}
         GROUP BY 1 ORDER BY 2 DESC LIMIT {limit}
     """
     return query_aact(sql, params)
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def get_pipeline_trials_table(indication: str | None, limit: int = MAX_TABLE_ROWS) -> pd.DataFrame:
+def get_pipeline_trials_table(
+    bucket: str | None,
+    pipeline_classes: tuple[str, ...] = (),
+    limit: int = MAX_TABLE_ROWS,
+) -> pd.DataFrame:
     params: dict = {}
-    ind_frag = _pipeline_ind_clause(indication, params)
-    cond_where = ("WHERE TRUE " + ind_frag).strip() if ind_frag else ""
+    cond_where = _pipeline_where(bucket, (), pipeline_classes, params)
     sql = f"""
         SELECT
             pt.nct_id,
             pt.sponsor_name,
             pt.intervention_name,
-            pt.condition,
+            pt.trial_bucket,
+            pt.pipeline_class,
             s.phase,
             s.overall_status,
             s.enrollment,
             s.start_date,
             s.primary_completion_date
-        FROM public.onco_pipeline_trials pt
+        FROM public.pipeline_trials pt
         LEFT JOIN ctgov.studies s ON s.nct_id = pt.nct_id
         {cond_where}
         ORDER BY s.start_date DESC NULLS LAST
         LIMIT {limit}
+    """
+    return query_aact(sql, params)
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def get_pipeline_by_class(
+    bucket: str | None,
+    sponsors: tuple[str, ...] = (),
+    pipeline_classes: tuple[str, ...] = (),
+) -> pd.DataFrame:
+    params: dict = {}
+    cond_where = _pipeline_where(bucket, sponsors, pipeline_classes, params,
+                                  base="WHERE pt.pipeline_class IS NOT NULL")
+    sql = f"""
+        SELECT
+            pt.pipeline_class            AS pipeline_class,
+            COUNT(DISTINCT pt.nct_id)   AS trial_count,
+            COUNT(DISTINCT pt.sponsor_name) AS sponsors
+        FROM public.pipeline_trials pt
+        {cond_where}
+        GROUP BY 1 ORDER BY 2 DESC
     """
     return query_aact(sql, params)
 
@@ -820,8 +850,31 @@ def get_pipeline_trials_table(indication: str | None, limit: int = MAX_TABLE_ROW
 
 @st.cache_data(ttl=300, show_spinner=False)
 def get_drug_trials(filters: FilterState) -> pd.DataFrame:
+    from data.query_builder import _list_clause, resolve_brand_names_from_drug_indication
+
     qb = QueryBuilder(filters)
     scope_clause, params = qb.study_scope_clause("s")
+
+    # Restrict dt.brand_name to brands actually in scope (same logic as
+    # get_drug_brand_names / get_drug_phase_brand_heatmap) so co-enrolled
+    # drugs from other classes don't appear as extra rows in the trial list.
+    restricted_brands: list[str] = []
+    if qb.brand_names:
+        restricted_brands.extend(qb.brand_names)
+    if filters.brand_name:
+        restricted_brands.extend(filters.brand_name)
+    if filters.drug_indication:
+        di_brands = resolve_brand_names_from_drug_indication(filters.drug_indication)
+        restricted_brands.extend(di_brands)
+    restricted_brands = list(dict.fromkeys(restricted_brands))
+
+    brand_filter = ""
+    if restricted_brands:
+        bn_p: dict = {}
+        bn_frag = _list_clause("dt.brand_name", restricted_brands, bn_p, "dtbf")
+        params.update(bn_p)
+        brand_filter = f"AND {bn_frag}"
+
     sql = f"""
         SELECT
             s.nct_id,
@@ -839,6 +892,7 @@ def get_drug_trials(filters: FilterState) -> pd.DataFrame:
         LEFT JOIN ctgov.sponsors sp
                ON sp.nct_id = s.nct_id AND sp.lead_or_collaborator = 'lead'
         WHERE {scope_clause}
+          {brand_filter}
         ORDER BY s.start_date DESC NULLS LAST
         LIMIT 500
     """

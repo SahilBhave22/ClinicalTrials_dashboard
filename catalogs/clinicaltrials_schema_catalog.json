@@ -194,7 +194,7 @@
       ]
     },
     {
-      "name": "public.onco_pipeline_trials",
+      "name": "public.pipeline_trials",
       "description": "Trial ids for relevant trials for pipeline/ upcoming drugs.",
       "primary_key": [
         "nct_id"
@@ -216,9 +216,14 @@
           "description": "Name of the intervention/ drug that is studied in the trial"
         },
         {
-          "name": "condition",
+          "name": "trial_bucket",
           "type": "character varying",
-          "description": "mesh term for condition studied in the trial. Also follows medrt coding."
+          "description": "bucket for condition studied in the trial. Also follows medrt coding."
+        },
+        {
+          "name": "pipeline_class",
+          "type": "character varying",
+          "description": "possible values: novel drug, new indication, new population, lifecycle study, unclassified"
         }
       ]
     },
