@@ -279,17 +279,16 @@ class QueryBuilder:
         if needs_bc_join:
             join_clause = f"JOIN {CONDITIONS_TABLE} c ON c.nct_id = dt.nct_id"
             # Sidebar selection is a display label — resolve to all matching raw
-            # condition names and use an IN clause (covers many-to-one mappings).
+            # condition names. Values come from a trusted JSON mapping file, so
+            # inlining as SQL literals is safe and avoids per-param bind overhead
+            # that causes pg8000 failures when the expansion is large (30+ names).
             if indication:
                 raw_conditions = get_raw_conditions_for_display_label(indication)
-                where_parts.append(
-                    _list_clause(
-                        f"LOWER(c.{CONDITIONS_NAME_COL})",
-                        [r.lower() for r in raw_conditions],
-                        params,
-                        "bc",
-                    )
+                in_list = ", ".join(
+                    "'" + r.lower().replace("'", "''") + "'"
+                    for r in raw_conditions
                 )
+                where_parts.append(f"LOWER(c.{CONDITIONS_NAME_COL}) IN ({in_list})")
             # Per-user allowlist (display labels → expanded to raw condition names)
             if allowed_indications is not None:
                 if not allowed_indications:
@@ -297,14 +296,11 @@ class QueryBuilder:
                 ua_raw: list[str] = []
                 for lbl in allowed_indications:
                     ua_raw.extend(get_raw_conditions_for_display_label(lbl))
-                where_parts.append(
-                    _list_clause(
-                        f"LOWER(c.{CONDITIONS_NAME_COL})",
-                        [v.lower() for v in ua_raw],
-                        params,
-                        "ua_ind",
-                    )
+                in_list = ", ".join(
+                    "'" + v.lower().replace("'", "''") + "'"
+                    for v in ua_raw
                 )
+                where_parts.append(f"LOWER(c.{CONDITIONS_NAME_COL}) IN ({in_list})")
 
         where_sql = "WHERE " + " AND ".join(where_parts) if where_parts else ""
         clause = f"""

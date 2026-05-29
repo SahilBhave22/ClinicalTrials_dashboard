@@ -1646,10 +1646,13 @@ def get_trials_with_outcomes(filters: FilterState) -> pd.DataFrame:
     Distinct trials that have at least one numeric outcome measurement,
     filtered by the active FilterState. Used for the trial comparison selector.
 
-    Uses EXISTS instead of JOINing through outcome_measurements to avoid
-    scanning the full measurements table; results_first_submitted_date IS NOT NULL
-    is a cheap indexed pre-filter that eliminates trials without posted results
-    before the EXISTS check runs.
+    Performance notes:
+    - nct_where (indication/brand scope) is applied FIRST so PostgreSQL narrows
+      the candidate set before running the EXISTS check.
+    - EXISTS join uses om.outcome_id = o.id::text (cast only the integer PK side)
+      so the index on om.outcome_id is usable. Casting both sides wraps the FK
+      in a function and forces a sequential scan on outcome_measurements.
+    - results_first_submitted_date IS NOT NULL is a cheap secondary pre-filter.
     """
     qb = QueryBuilder(filters)
     scope_clause, params = qb.study_scope_clause("s")
@@ -1668,15 +1671,15 @@ def get_trials_with_outcomes(filters: FilterState) -> pd.DataFrame:
             s.enrollment
         FROM ctgov.studies s
         WHERE s.results_first_submitted_date IS NOT NULL
+          {nct_where}
           AND EXISTS (
               SELECT 1
               FROM ctgov.outcomes o
               JOIN ctgov.outcome_measurements om
-                ON om.outcome_id::text = o.id::text
+                ON om.outcome_id = o.id
               WHERE o.nct_id = s.nct_id
                 AND om.param_value_num IS NOT NULL
           )
-          {nct_where}
         ORDER BY s.start_date DESC NULLS LAST
         LIMIT 500
     """
