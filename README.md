@@ -1,4 +1,4 @@
-# Clinical Trials Intelligence Platform
+# Clinical Trials Intelligence Platform (OLDER STREAMLIT VERSION)
 
 A production-quality Streamlit application for pharmaceutical competitive intelligence, pipeline analysis, PRO analytics, and clinical safety benchmarking.
 
